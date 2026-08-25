@@ -22,7 +22,7 @@
     "build": "node scripts/build.mjs",
     "build:lib": "node scripts/build.mjs lib",
     "build:viewer": "node scripts/build.mjs viewer",
-    "build:superdoc-contract": "tsc --project vendor/superdoc-document-api/tsconfig.json",
+    "build:superdoc-contract": "tsc --build vendor/superdoc-document-api/tsconfig.json --force",
     "typecheck": "pnpm run build:superdoc-contract && tsc --project tsconfig.json --noEmit && tsc --project tsconfig.client.json --noEmit",
     "test:local": "node --experimental-strip-types --test test/local-store.test.ts",
     "test:host": "node test/host-smoke.mjs",
