@@ -1,0 +1,24 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+export { default as darkBlueTheme } from './dark-blue';
+export { default as blueTheme, default as defaultTheme } from './default';
+export type { Theme } from './default';
+export { default as greenTheme } from './green';
+export { default as orangeTheme } from './orange';
+export { default as purpleTheme } from './purple';
+export { default as redTheme } from './red';
+export { default as yellowTheme } from './yellow';

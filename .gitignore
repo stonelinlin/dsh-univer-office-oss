@@ -1,9 +1,13 @@
 # Generated build artifacts — never commit these.
-# lib/, the Viewer, the worker, and the Gateway are built from src/ over the SDK:
+# lib/ and the OSS Viewer are built from checked-in source:
 #   pnpm run build
 dist/
 /lib/
 node_modules/
 /artifacts/
+vendor/univer/**/lib/
+vendor/univer/**/dist/
+vendor/univer/**/node_modules/
+vendor/superdoc-document-api/dist/
 *.tgz
 *.zip

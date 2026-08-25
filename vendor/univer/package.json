@@ -1,0 +1,85 @@
+{
+    "name": "univer",
+    "type": "module",
+    "version": "1.0.0-beta.2",
+    "private": true,
+    "packageManager": "pnpm@11.22.0",
+    "author": "DreamNum Co., Ltd. <developer@univer.ai>",
+    "license": "Apache-2.0",
+    "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/univer"
+    },
+    "homepage": "https://univer.ai",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/dream-num/univer"
+    },
+    "bugs": {
+        "url": "https://github.com/dream-num/univer/issues"
+    },
+    "devEngines": {
+        "runtime": {
+            "name": "node",
+            "version": ">=22.18"
+        }
+    },
+    "scripts": {
+        "prepare": "husky",
+        "pre-commit": "lint-staged",
+        "dev": "pnpm --filter univer-examples dev:demo -- --host 0.0.0.0",
+        "dev:umd": "serve .",
+        "dev:e2e": "pnpm --filter univer-examples dev:e2e",
+        "use:react16": "node --experimental-strip-types ./scripts/react-version-manager.mts --react=16",
+        "use:react19": "node --experimental-strip-types ./scripts/react-version-manager.mts --react=19",
+        "typecheck": "turbo typecheck",
+        "serve:umd": "serve .",
+        "test": "turbo test -- --passWithNoTests",
+        "coverage": "turbo --concurrency 50% coverage -- --passWithNoTests ",
+        "analyze:build": "node --experimental-strip-types ./scripts/build-analysis.mts",
+        "build": "pnpm run build:plugins && pnpm run build:presets",
+        "build:ci": "pnpm run build",
+        "build:plugins": "turbo build --filter '!./common/*' --filter '!./presets/**'",
+        "build:presets": "turbo build --filter './presets/**...' --filter '!./presets/**' && turbo build --filter './presets/**'",
+        "build:demo": "pnpm --filter univer-examples build:demo",
+        "build:e2e": "turbo build:e2e --filter univer-examples",
+        "serve:e2e": "serve ./examples/local",
+        "test:e2e": "playwright test",
+        "lint": "eslint .",
+        "storybook:dev": "pnpm --filter @univerjs/storybook dev:storybook",
+        "storybook:build": "pnpm --filter @univerjs/storybook build:storybook",
+        "release": "verso"
+    },
+    "devDependencies": {
+        "@amamo/verso": "1.2.0",
+        "@antfu/eslint-config": "^9.2.0",
+        "@commitlint/cli": "^21.2.2",
+        "@commitlint/config-conventional": "^21.2.2",
+        "@eslint-react/eslint-plugin": "^5.18.1",
+        "@eslint/compat": "^2.1.0",
+        "@playwright/test": "^1.57.0",
+        "@types/node": "^26.1.2",
+        "@types/react": "19.2.18",
+        "@types/react-dom": "19.2.4",
+        "@univerjs-infra/shared": "workspace:*",
+        "@univerjs/design": "workspace:*",
+        "eslint": "^10.8.0",
+        "eslint-plugin-format": "^2.0.1",
+        "eslint-plugin-react": "^7.37.5",
+        "eslint-plugin-react-hooks": "^7.1.1",
+        "eslint-plugin-react-refresh": "^0.5.3",
+        "husky": "^9.1.7",
+        "lint-staged": "^17.3.0",
+        "posthog-node": "^5.49.3",
+        "react": "19.2.8",
+        "react-dom": "19.2.8",
+        "serve": "^14.2.6",
+        "tailwindcss": "3.4.18",
+        "turbo": "^2.10.8",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.11"
+    },
+    "lint-staged": {
+        "*": "eslint --fix"
+    }
+}

@@ -1,4 +1,4 @@
-# DSH × Univer integration: Host services + browser client + bundled Gateway and Viewer.
+# DSH × Univer OSS integration: local Host service and source-built Viewer.
 - insert:
     - id: univer
-      name: 'dsh-univer-office'
+      name: 'dsh-univer-office-oss'

@@ -1,0 +1,66 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ISelectionWithStyle } from '@univerjs/sheets';
+import type { LocaleKey } from '../../locale/types';
+import type { IMenuItemFrozenProps } from './interface';
+import { LocaleService, Tools } from '@univerjs/core';
+import { SheetsSelectionsService } from '@univerjs/sheets';
+import { useDependency } from '@univerjs/ui';
+import { useEffect, useState } from 'react';
+
+const defaultValue = {
+    row: '1',
+    col: 'A',
+};
+
+function getFrozenValue(selection?: ISelectionWithStyle | null) {
+    if (!selection) return defaultValue;
+
+    const { primary, range } = selection;
+    const row = primary?.startRow ?? range.startRow;
+    const col = primary?.startColumn ?? range.startColumn;
+
+    return {
+        row: row === 0 ? '1' : String(row),
+        col: col === 0 ? 'A' : Tools.chatAtABC(col - 1),
+    };
+}
+
+export const MenuItemFrozen = (props: IMenuItemFrozenProps) => {
+    const { type } = props;
+
+    const localeService = useDependency(LocaleService);
+    const selectionManagerService = useDependency(SheetsSelectionsService);
+
+    const [value, setValue] = useState(() => getFrozenValue(selectionManagerService.getCurrentLastSelection() as ISelectionWithStyle));
+
+    useEffect(() => {
+        const subscription = selectionManagerService.selectionChanged$.subscribe((selections) => {
+            setValue(getFrozenValue(selections?.[selections.length - 1]));
+        });
+
+        return () => subscription.unsubscribe();
+    }, [selectionManagerService]);
+
+    return (
+        <>
+            {type === 'row' && localeService.t<LocaleKey>('sheets-ui.rightClick.freezeRow', value.row)}
+            {type === 'col' && localeService.t<LocaleKey>('sheets-ui.rightClick.freezeCol', value.col)}
+            {type === 'all' && localeService.t<LocaleKey>('sheets-ui.rightClick.freezeCell', value.row, value.col)}
+        </>
+    );
+};

@@ -1,0 +1,5 @@
+public
+!public/index.html
+!public/favicon.svg
+src/demos.ts
+entry-selection.json

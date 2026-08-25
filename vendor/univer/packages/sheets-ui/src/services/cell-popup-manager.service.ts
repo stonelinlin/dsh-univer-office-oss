@@ -1,0 +1,196 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { IDisposable } from '@univerjs/core';
+import type { ISheetLocationBase } from '@univerjs/sheets';
+import type { RectPopupDirection } from '@univerjs/ui';
+import type { ICanvasPopup } from './canvas-pop-manager.service';
+import { Disposable, generateRandomId, Inject, ObjectMatrix, toDisposable } from '@univerjs/core';
+import { Subject } from 'rxjs';
+import { CELL_POPUP_COMPONENT_KEY } from '../views/cell-popup/config';
+import { SheetCanvasPopManagerService } from './canvas-pop-manager.service';
+
+export type CellPopupDirection = Extract<RectPopupDirection, 'horizontal' | 'vertical' | 'left-center'>;
+
+const CELL_POPUP_DIRECTIONS: CellPopupDirection[] = ['horizontal', 'vertical', 'left-center'];
+
+export interface ICellPopup extends Omit<ICanvasPopup, 'direction' | 'offset' | 'mask'> {
+    direction?: CellPopupDirection;
+    id?: string;
+    priority: number;
+}
+
+export interface ICellPopupDirectionCache {
+    popups: ICellPopup[];
+    disposable?: IDisposable;
+}
+
+export type ICellPopupCache = Partial<Record<CellPopupDirection, ICellPopupDirectionCache>>;
+
+export interface ICellPopupChange extends ISheetLocationBase {
+    direction: CellPopupDirection;
+}
+
+export class CellPopupManagerService extends Disposable {
+    private readonly _cellPopupMap = new Map<string, Map<string, ObjectMatrix<ICellPopupCache>>>();
+    private readonly _change$ = new Subject<ICellPopupChange>();
+    readonly change$ = this._change$.asObservable();
+
+    constructor(
+        @Inject(SheetCanvasPopManagerService) private readonly _sheetCanvasPopManagerService: SheetCanvasPopManagerService
+    ) {
+        super();
+    }
+
+    private _ensureCellPopupMap(unitId: string, subUnitId: string) {
+        let unitMap = this._cellPopupMap.get(unitId);
+        if (!unitMap) {
+            unitMap = new Map();
+            this._cellPopupMap.set(unitId, unitMap);
+        }
+        let subUnitMap = unitMap.get(subUnitId);
+        if (!subUnitMap) {
+            subUnitMap = new ObjectMatrix<ICellPopupCache>();
+            unitMap.set(subUnitId, subUnitMap);
+        }
+        return subUnitMap;
+    }
+
+    showPopup(location: ISheetLocationBase, popup: ICellPopup) {
+        const { direction = 'horizontal' } = popup;
+        const { unitId, subUnitId, row, col } = location;
+        const subUnitMap = this._ensureCellPopupMap(unitId, subUnitId);
+        const directionCache = subUnitMap.getValue(row, col)?.[direction];
+
+        popup.id = popup.id ?? generateRandomId();
+
+        const hidePopup = () => {
+            const root = subUnitMap.getValue(row, col);
+            if (!root) {
+                return;
+            }
+            const directionCache = root[direction];
+            if (!directionCache) {
+                return;
+            }
+
+            const findIndex = directionCache?.popups.findIndex((p) => p.id === popup.id && p.componentKey === popup.componentKey);
+            directionCache?.popups.splice(findIndex, 1);
+
+            if (directionCache.popups.length === 0) {
+                directionCache.disposable?.dispose();
+                root[direction] = undefined;
+            }
+
+            this._change$.next({
+                ...location,
+                direction,
+            });
+        };
+
+        if (!directionCache) {
+            const disposable = this._sheetCanvasPopManagerService.attachPopupToCell(
+                row,
+                col,
+                {
+                    ...popup,
+                    direction,
+                    componentKey: CELL_POPUP_COMPONENT_KEY,
+                    extraProps: {
+                        ...location,
+                        direction,
+                    },
+                    noPushMinimumGap: true,
+                    autoRelayout: popup.autoRelayout ?? false,
+                    zIndex: 90,
+                },
+                unitId,
+                subUnitId
+            );
+
+            subUnitMap.setValue(row, col, {
+                ...subUnitMap.getValue(row, col),
+                [direction]: {
+                    disposable,
+                    popups: [popup],
+                },
+            });
+        } else {
+            directionCache.popups.push(popup);
+            directionCache.popups.sort((a, b) => a.priority - b.priority);
+        }
+
+        this._change$.next({
+            ...location,
+            direction,
+        });
+
+        return toDisposable(hidePopup);
+    }
+
+    getPopups(unitId: string, subUnitId: string, row: number, col: number, direction: CellPopupDirection) {
+        const subUnitMap = this._ensureCellPopupMap(unitId, subUnitId);
+        return subUnitMap.getValue(row, col)?.[direction]?.popups || [];
+    }
+
+    hidePopup(unitId: string, subUnitId: string, row: number, col: number) {
+        const subUnitMap = this._ensureCellPopupMap(unitId, subUnitId);
+        const cache = subUnitMap.getValue(row, col);
+        if (!cache) {
+            return;
+        }
+
+        CELL_POPUP_DIRECTIONS.forEach((direction) => {
+            const directionCache = cache[direction];
+            if (!directionCache) {
+                return;
+            }
+
+            directionCache.disposable?.dispose();
+            cache[direction] = undefined;
+            this._change$.next({ unitId, subUnitId, row, col, direction });
+        });
+
+        if (CELL_POPUP_DIRECTIONS.every((direction) => !cache[direction])) {
+            subUnitMap.realDeleteValue(row, col);
+        }
+    }
+
+    hidePopupsForUnit(unitId: string, subUnitId?: string): void {
+        const unitMap = this._cellPopupMap.get(unitId);
+        if (!unitMap) {
+            return;
+        }
+
+        const targets: Array<{ subUnitId: string; row: number; col: number }> = [];
+        const subUnitEntries: Array<[string, ObjectMatrix<ICellPopupCache> | undefined]> = subUnitId
+            ? [[subUnitId, unitMap.get(subUnitId)]]
+            : [...unitMap.entries()];
+
+        subUnitEntries.forEach(([currentSubUnitId, subUnitMap]) => {
+            subUnitMap?.forValue((row, col) => {
+                targets.push({ subUnitId: currentSubUnitId, row, col });
+            });
+        });
+
+        targets.forEach((target) => this.hidePopup(unitId, target.subUnitId, target.row, target.col));
+        if (subUnitId) {
+            unitMap.delete(subUnitId);
+        } else {
+            this._cellPopupMap.delete(unitId);
+        }
+    }
+}

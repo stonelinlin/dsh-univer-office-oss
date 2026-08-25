@@ -3,12 +3,12 @@ import type { UniverLocaleKey } from './zh.ts'
 /** English UI strings. */
 export const en = {
   title: 'Univer Preview', expand: 'Expand preview', collapse: 'Collapse preview', refresh: 'Refresh',
-  'gateway.running': 'Univer Gateway running', 'gateway.stopped': 'Univer Gateway stopped — click to start',
-  'gateway.starting': 'Starting Univer Gateway…', 'gateway.checking': 'Checking Univer Gateway…', 'gateway.failed': 'Univer Gateway unavailable — click to retry',
+  'gateway.running': 'Local Univer runtime ready', 'gateway.stopped': 'Local Univer runtime stopped — click to start',
+  'gateway.starting': 'Starting local Univer runtime…', 'gateway.checking': 'Checking local Univer runtime…', 'gateway.failed': 'Local Univer runtime unavailable — click to retry',
   'dock.live': 'live sync', 'dock.draft': 'Editing', 'dock.ready': 'Ready', 'dock.mergeReady': 'Ready',
   'dock.unit.added': 'A', 'dock.unit.modified': 'M', 'dock.unit.deleted': 'D', 'dock.unit.conflict': 'Conflict',
   'dock.fold': 'Collapse', 'dock.expand': 'Expand', 'dock.maximize': 'Maximize', 'dock.restore': 'Restore', 'dock.close': 'Close',
-  'dock.gatewayDown': 'Univer Gateway is not running; live preview is unavailable', 'dock.startGateway': 'Start Gateway',
+  'dock.gatewayDown': 'Local Univer runtime is unavailable', 'dock.startGateway': 'Retry runtime',
   'dock.mergeTitle': 'Merge preview', 'dock.reviewTitle': 'Modification in progress', 'dock.markReady': 'Submit for confirmation',
   'dock.merged': 'Merged', 'dock.discarded': 'Discarded', 'dock.mergedTitle': 'Changes merged', 'dock.discardedTitle': 'Changes discarded',
   'dock.fullscreen': 'Review fullscreen', 'dock.exitFullscreen': 'Exit fullscreen',

@@ -1,0 +1,160 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { CSSProperties } from 'react';
+import { clsx, scrollbarClassName } from '@univerjs/design';
+import { CatalogueIcon, MoreLeftIcon } from '@univerjs/icons';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+
+export interface ISideMenuItem {
+    text: string;
+    level: number;
+    id: string;
+    isTitle?: boolean;
+}
+
+export interface ISideMenuProps {
+    menus?: ISideMenuItem[];
+    onClick?: (menu: ISideMenuItem) => void;
+    className?: string;
+    style?: CSSProperties;
+    mode?: 'float' | 'side-bar';
+    maxHeight: number;
+    activeId?: string;
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
+    maxWidth?: number;
+    wrapperClass?: string;
+    wrapperStyle?: CSSProperties;
+    iconClass?: string;
+    iconStyle?: CSSProperties;
+}
+
+export interface ISideMenuInstance {
+    scrollTo: (id: string) => void;
+}
+
+export const SideMenu = forwardRef<ISideMenuInstance, ISideMenuProps>((props, ref) => {
+    const { menus, onClick, className, style, mode, maxHeight, activeId, open, onOpenChange, maxWidth, wrapperClass, wrapperStyle, iconClass, iconStyle } = props;
+    const isSideBar = mode === 'side-bar';
+    const containerRef = useRef<HTMLDivElement>(null);
+    const menusRef = useRef(menus);
+    menusRef.current = menus;
+    const instance: ISideMenuInstance = useMemo(() => ({
+        scrollTo: (id: string) => {
+            if (!menusRef.current) return;
+            const index = menusRef.current.findIndex((menu) => menu.id === id);
+            if (index === -1 || !containerRef.current) return;
+
+            // Find the actual DOM element by its ID
+            const targetElement = document.getElementById(`univer-side-menu-${id}`);
+            if (!targetElement) return;
+
+            // Get the element's offsetTop relative to its parent
+            const targetTop = targetElement.offsetTop;
+
+            // Get container's scrollable height
+            const containerHeight = containerRef.current.clientHeight;
+            const maxScrollTop = containerRef.current.scrollHeight - containerHeight;
+
+            // Calculate the scroll position to center the element if possible
+            const scrollPosition = Math.max(0, Math.min(targetTop - containerHeight / 2 + targetElement.clientHeight / 2, maxScrollTop));
+
+            containerRef.current?.scrollTo({
+                behavior: 'smooth',
+                top: scrollPosition,
+            });
+        },
+    }), []);
+
+    useImperativeHandle(ref, () => instance);
+
+    useEffect(() => {
+        if (activeId) {
+            instance.scrollTo(activeId);
+        }
+    }, [activeId, instance]);
+
+    return (
+        <div className={clsx('univer-relative', wrapperClass)} style={wrapperStyle}>
+            <div
+                onClick={() => onOpenChange?.(!open)}
+                className={clsx(`
+                  univer-absolute univer-left-5 univer-top-4 univer-z-[100] univer-flex univer-size-8
+                  univer-cursor-pointer univer-items-center univer-justify-center univer-rounded-full univer-bg-gray-0
+                  univer-text-gray-800 univer-shadow-sm
+                  dark:!univer-bg-gray-600 dark:!univer-text-gray-200
+                `, iconClass)}
+                style={iconStyle}
+            >
+                {open ? <MoreLeftIcon /> : <CatalogueIcon />}
+            </div>
+            <div
+                className={clsx(
+                    className,
+                    `
+                      univer-absolute univer-left-0 univer-top-0 univer-box-border univer-flex univer-min-w-[180px]
+                      univer-flex-col univer-px-4 univer-pb-4 univer-pt-14 univer-transition-all univer-duration-300
+                    `,
+                    {
+                        'univer-rounded-r-2xl univer-bg-gray-0 univer-shadow univer-backdrop-blur-[10px] dark:!univer-bg-gray-900': isSideBar,
+                    }
+                )}
+                style={{
+                    ...style,
+                    transform: open ? 'translateX(0)' : 'translateX(-100%)',
+                    maxHeight,
+                    opacity: open ? 1 : 0,
+                    maxWidth: maxWidth ?? (mode === 'side-bar' ? 320 : 180),
+                    paddingRight: mode === 'float' ? undefined : 0,
+                }}
+            >
+                <div
+                    ref={containerRef}
+                    className={clsx('univer-flex-1 univer-overflow-y-auto univer-overflow-x-hidden', scrollbarClassName)}
+                >
+                    {menus?.map((menu) => (
+                        <div
+                            id={`univer-side-menu-${menu.id}`}
+                            key={menu.id}
+                            className={clsx(
+                                `
+                                  univer-mb-2 univer-h-[24px] univer-cursor-pointer univer-truncate univer-pr-1
+                                  univer-font-[500] univer-leading-[24px]
+                                `,
+                                {
+                                    'univer-text-base univer-font-semibold': menu.isTitle,
+                                    'univer-text-sm univer-font-semibold': menu.level === 1,
+                                    'univer-text-sm': menu.level > 1,
+                                    'univer-text-gray-500 dark:!univer-text-gray-400': menu.id !== activeId,
+                                    'univer-text-gray-800 dark:!univer-text-gray-200': menu.id === activeId,
+                                }
+                            )}
+                            style={{
+                                paddingLeft: (menu.level - 1) * 12,
+                            }}
+                            onClick={() => {
+                                onClick?.(menu);
+                            }}
+                        >
+                            {menu.text}
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+});

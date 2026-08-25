@@ -3,14 +3,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import { unitId, worktreeId } from '../../service/identifiers.ts'
 import { UniverError } from '../../service/errors.ts'
 import { operationOutput, operationTitle } from '../presentation.ts'
-import { stripGatewaySuccessEnvelope } from '../normalize.ts'
 import { existingToolFile } from '../workspace.ts'
 
 /** Create the `univer_unit` tool definition. */
 export function unitTool(ctx: Context, timeoutMs: number) {
   return defineTool({
     name: 'univer_unit',
-    description: 'Create or remove a top-level Sheet, Doc, Slide, Base, or Board Unit inside an explicit draft worktree. Use univer_status to list Units.',
+    description: 'Create or remove a top-level Unit inside an explicit draft worktree. Sheet and Doc have full OSS editing support; Slide, Base, and Board are structural snapshots only.',
     timeoutMs,
     parameters: {
       action: { type: 'string', required: true, enum: ['create', 'remove'], description: 'Unit lifecycle action.' },
@@ -27,25 +26,25 @@ export function unitTool(ctx: Context, timeoutMs: number) {
         if (args.kind === undefined || args.name === undefined || args.name.length === 0) {
           throw new UniverError('univer_unit create requires kind and a non-empty name.', 'INVALID_REQUEST')
         }
-        return stripGatewaySuccessEnvelope(await ctx.univer.unit({
+        return await ctx.univer.unit({
           action: 'create',
           workspace: target.workspace,
           file: target.path,
           worktreeId: worktreeId(args.worktreeId),
           kind: args.kind,
           name: args.name,
-        }, exec.signal))
+        }, exec.signal)
       }
       if (args.unitId === undefined || args.unitId.length === 0) {
         throw new UniverError('univer_unit remove requires unitId.', 'INVALID_REQUEST')
       }
-      return stripGatewaySuccessEnvelope(await ctx.univer.unit({
+      return await ctx.univer.unit({
         action: 'remove',
         workspace: target.workspace,
         file: target.path,
         worktreeId: worktreeId(args.worktreeId),
         unitId: unitId(args.unitId),
-      }, exec.signal))
+      }, exec.signal)
     },
     presentCall: (args) => ({ card: 'generic', title: operationTitle(`unit ${args.action}`, args.file), kind: 'execute' }),
   })

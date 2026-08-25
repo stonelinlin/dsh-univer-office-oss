@@ -1,0 +1,120 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type enUS from './en-US';
+import emojiLocale from './emoji-locale/vi-VN.generated';
+
+const locale: typeof enUS = {
+    ui: {
+        featureSearch: {
+            title: 'Tìm kiếm tính năng',
+            placeholder: 'Nhập tên tính năng hoặc menu...',
+            empty: 'Không tìm thấy tính năng khả dụng',
+            ribbon: 'Dải băng',
+            contextMenu: 'Menu ngữ cảnh',
+        },
+        emojiPicker: {
+            search: 'Tìm kiếm',
+            random: 'Emoji ngẫu nhiên',
+            recents: 'Gần đây',
+            emojis: 'Emoji',
+            animals: 'Động vật',
+            food: 'Đồ ăn',
+            activities: 'Hoạt động',
+            places: 'Địa điểm',
+            objects: 'Đồ vật',
+            symbols: 'Ký hiệu',
+            searchResults: 'Kết quả tìm kiếm',
+            noResults: 'Không tìm thấy emoji',
+            ...emojiLocale,
+        },
+        symbolPicker: {
+            mathematics: 'Toán học',
+            greek: 'Chữ Hy Lạp',
+            common: 'Thông dụng',
+        },
+        toolbar: {
+            heading: {
+                normal: 'Văn bản',
+                title: 'Tiêu đề',
+                subTitle: 'Tiêu đề phụ',
+                1: 'Tiêu đề 1',
+                2: 'Tiêu đề 2',
+                3: 'Tiêu đề 3',
+                4: 'Tiêu đề 4',
+                5: 'Tiêu đề 5',
+            },
+        },
+        ribbon: {
+            start: 'Bắt đầu',
+            startDesc: 'Khởi tạo bảng tính và thiết lập các tham số cơ bản.',
+            insert: 'Chèn',
+            insertDesc: 'Chèn hàng, cột, biểu đồ và các phần tử khác.',
+            formulas: 'Công thức',
+            formulasDesc: 'Sử dụng hàm và công thức để tính toán dữ liệu.',
+            data: 'Dữ liệu',
+            dataDesc: 'Sắp xếp, lọc và phân tích dữ liệu.',
+            view: 'Xem',
+            viewDesc: 'Chuyển đổi chế độ xem và điều chỉnh hiệu ứng hiển thị.',
+            others: 'Khác',
+            othersDesc: 'Các chức năng và cài đặt khác.',
+            more: 'Thêm',
+        },
+        fontFamily: {
+            'not-supported': 'Không tìm thấy phông chữ này trong hệ thống, sử dụng phông chữ mặc định.',
+        },
+        'shortcut-panel': {
+            title: 'Bảng phím tắt',
+        },
+        shortcut: {
+            undo: 'Hoàn tác',
+            redo: 'Làm lại',
+            cut: 'Cắt',
+            copy: 'Sao chép',
+            paste: 'Dán',
+            'shortcut-panel': 'Mở/Đóng bảng phím tắt',
+        },
+        'common-edit': 'Chỉnh sửa thường dùng',
+        'toggle-shortcut-panel': 'Mở/Đóng bảng phím tắt',
+        navigation: {
+            back: 'Quay lại',
+            previous: 'Trước',
+            next: 'Tiếp theo',
+        },
+        sidebar: {
+            panel: 'Bảng bên',
+            resize: 'Thay đổi kích thước bảng bên',
+            close: 'Đóng bảng bên',
+        },
+        beforeClose: {
+            title: 'Một số thay đổi chưa được lưu',
+        },
+        clipboard: {
+            authentication: {
+                title: 'Không thể truy cập vào bảng nhớ tạm',
+                content: 'Vui lòng cho phép Univer truy cập vào bảng nhớ tạm của bạn.',
+            },
+        },
+        rangeSelector: {
+            cancel: 'Hủy',
+        },
+        'global-shortcut': 'Phím tắt toàn cầu',
+        row: 'Hàng',
+        column: 'Cột',
+    },
+};
+
+export default locale;

@@ -1,0 +1,1958 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ColumnSeparatorType, ISectionColumnProperties, LocaleService, Nullable } from '@univerjs/core';
+import type {
+    IDocumentSkeletonCached,
+    IDocumentSkeletonColumn,
+    IDocumentSkeletonGlyph,
+    IDocumentSkeletonLine,
+    IDocumentSkeletonPage,
+    ISkeletonResourceReference,
+} from '../../../basics/i-document-skeleton-cached';
+import type { IDocsConfig, INodeInfo, INodePosition, INodeSearch } from '../../../basics/interfaces';
+import type { IViewportInfo, Vector2 } from '../../../basics/vector2';
+import type { DocumentViewModel } from '../view-model/document-view-model';
+import type { IDocumentPaginationMetrics, ILayoutContext } from './tools';
+import { BooleanNumber, DataStreamTreeTokenType, PRESET_LIST_TYPE, SectionType, Skeleton } from '@univerjs/core';
+import { Subject } from 'rxjs';
+import {
+    BreakType,
+    DocumentSkeletonPageType,
+    GlyphType,
+    LineType,
+    PageLayoutType,
+} from '../../../basics/i-document-skeleton-cached';
+import { getDocumentCompatibilityPolicy } from '../document-compatibility';
+import { Liquid } from '../liquid';
+import { getDocsTableRenderViewport, hasDocsTableHorizontalViewport } from '../table-render-viewport';
+import { DocumentEditArea } from '../view-model/document-view-model';
+import { dealWithSection } from './block/section';
+import { getTableIdAndSliceIndex } from './block/table';
+import { Hyphen } from './hyphenation/hyphen';
+import { LanguageDetector } from './hyphenation/language-detector';
+import { createSkeletonPage } from './model/page';
+import { createSkeletonSection } from './model/section';
+import {
+    getLastNotFullColumnInfo,
+    getLastPage,
+    getNullSkeleton,
+    getPageFromPath,
+    prepareSectionBreakConfig,
+    resetContext,
+    setPageParent,
+    updateBlockIndex,
+    updateInlineDrawingCoordsAndBorder,
+} from './tools';
+
+function getEffectiveSectionType(sectionType: SectionType | undefined): SectionType {
+    return sectionType == null || sectionType === SectionType.SECTION_TYPE_UNSPECIFIED
+        ? SectionType.NEXT_PAGE
+        : sectionType;
+}
+
+function hasCompatiblePageGeometry(page: IDocumentSkeletonPage, config: ReturnType<typeof prepareSectionBreakConfig>): boolean {
+    const { pageSize, pageOrient, marginTop, marginBottom, marginLeft, marginRight } = config;
+    return page.pageWidth === pageSize?.width &&
+        page.pageHeight === pageSize?.height &&
+        page.pageOrient === pageOrient &&
+        page.originMarginTop === marginTop &&
+        page.originMarginBottom === marginBottom &&
+        page.marginLeft === marginLeft &&
+        page.marginRight === marginRight;
+}
+
+function hasCompatiblePhysicalPage(page: IDocumentSkeletonPage, config: ReturnType<typeof prepareSectionBreakConfig>): boolean {
+    const { pageSize, pageOrient } = config;
+    return page.pageWidth === pageSize?.width &&
+        page.pageHeight === pageSize?.height &&
+        page.pageOrient === pageOrient;
+}
+
+function hasAvailableContinuousSectionSpace(page: IDocumentSkeletonPage): boolean {
+    const lastSection = page.sections.at(-1);
+    const contentHeight = page.pageHeight - page.marginTop - page.marginBottom;
+    const flowHeight = Math.max(
+        0,
+        ...(lastSection?.columns ?? []).flatMap((column) =>
+            column.lines.map((line) => line.top + line.lineHeight)
+        )
+    );
+    return (lastSection?.top ?? 0) + flowHeight < contentHeight - 1e-6;
+}
+
+function hasOnlyExplicitPageBoundaryMarkers(page: IDocumentSkeletonPage): boolean {
+    if ((page.skeTables?.size ?? 0) > 0) {
+        return false;
+    }
+    return (page.sections ?? []).every((section) =>
+        section.columns.every((column) =>
+            column.lines.every((line) =>
+                line.divides.every((divide) =>
+                    divide.glyphGroup.every(({ raw, streamType }) =>
+                        raw === DataStreamTreeTokenType.PARAGRAPH ||
+                        streamType === DataStreamTreeTokenType.PARAGRAPH ||
+                        raw === DataStreamTreeTokenType.PAGE_BREAK ||
+                        streamType === DataStreamTreeTokenType.PAGE_BREAK ||
+                        raw === DataStreamTreeTokenType.SECTION_BREAK ||
+                        streamType === DataStreamTreeTokenType.SECTION_BREAK
+                    )
+                )
+            )
+        )
+    );
+}
+
+interface IColumnFlowLine {
+    line: IDocumentSkeletonLine;
+    gapBefore: number;
+}
+
+function collectColumnFlowLines(columns: IDocumentSkeletonColumn[]): IColumnFlowLine[] {
+    return columns.flatMap((column) => {
+        let previousBottom = 0;
+        return column.lines.map((line) => {
+            const gapBefore = Math.max(0, line.top - previousBottom);
+            previousBottom = line.top + line.lineHeight;
+            return { line, gapBefore };
+        });
+    });
+}
+
+function takeBalancedColumnLineCount(
+    flowLines: IColumnFlowLine[],
+    startIndex: number,
+    remainingColumnCount: number,
+    targetHeight: number
+): number {
+    const maximumCount = flowLines.length - startIndex - (remainingColumnCount - 1);
+    let count = 0;
+    let height = 0;
+
+    while (count < maximumCount) {
+        const { line, gapBefore } = flowLines[startIndex + count];
+        const nextHeight = height + gapBefore + line.lineHeight;
+        if (count > 0 && Math.abs(targetHeight - height) <= Math.abs(targetHeight - nextHeight)) {
+            break;
+        }
+        height = nextHeight;
+        count++;
+    }
+
+    return Math.max(1, count);
+}
+
+function hasSameColumnGeometry(
+    currentColumns: ISectionColumnProperties[],
+    nextColumns: ISectionColumnProperties[]
+): boolean {
+    return currentColumns.length === nextColumns.length && currentColumns.every((column, index) => {
+        const nextColumn = nextColumns[index];
+        return nextColumn != null &&
+            Math.abs(column.width - nextColumn.width) <= 0.01 &&
+            Math.abs(column.paddingEnd - nextColumn.paddingEnd) <= 0.01;
+    });
+}
+
+/**
+ * Word balances the final page of a multi-column section before a continuous
+ * section break. The normal page layout intentionally fills columns in flow
+ * order, so rebalance the final line-only fragment once its complete height is
+ * known. Tables, column groups, drawings, and unequal-width columns stay on
+ * the regular layout path because moving those blocks requires a full relayout.
+ */
+function balanceFinalContinuousColumnSection(page: IDocumentSkeletonPage): void {
+    const section = page.sections.at(-1);
+    if (section == null || section.columns.length < 2 || section.columns.at(-1)?.isFull) {
+        return;
+    }
+    const firstWidth = section.columns[0].width;
+    if (
+        section.columns.some((column) =>
+            Math.abs(column.width - firstWidth) > 0.01 ||
+            column.drawingLRIds.length > 0 ||
+            column.lines.some((line) => line.type !== LineType.PARAGRAPH || line.tableId !== '')
+        ) ||
+        page.skeColumnGroups.size > 0 ||
+        page.skeDrawings.size > 0
+    ) {
+        return;
+    }
+
+    const flowLines = collectColumnFlowLines(section.columns);
+    if (flowLines.length < section.columns.length) {
+        return;
+    }
+
+    let lineIndex = 0;
+    let remainingHeight = flowLines.reduce(
+        (height, { line, gapBefore }) => height + gapBefore + line.lineHeight,
+        0
+    );
+    for (let columnIndex = 0; columnIndex < section.columns.length; columnIndex++) {
+        const column = section.columns[columnIndex];
+        const remainingColumnCount = section.columns.length - columnIndex;
+        const lineCount = remainingColumnCount === 1
+            ? flowLines.length - lineIndex
+            : takeBalancedColumnLineCount(
+                flowLines,
+                lineIndex,
+                remainingColumnCount,
+                remainingHeight / remainingColumnCount
+            );
+        const assignedLines = flowLines.slice(lineIndex, lineIndex + lineCount);
+        let columnHeight = 0;
+
+        column.lines = assignedLines.map(({ line, gapBefore }) => {
+            columnHeight += gapBefore;
+            line.top = columnHeight;
+            line.parent = column;
+            columnHeight += line.lineHeight;
+            return line;
+        });
+        column.height = columnHeight;
+        column.isFull = false;
+        remainingHeight -= assignedLines.reduce(
+            (height, { line, gapBefore }) => height + gapBefore + line.lineHeight,
+            0
+        );
+        lineIndex += lineCount;
+    }
+
+    section.height = Math.max(...section.columns.map((column) => column.height ?? 0));
+}
+
+function isTargetPageParity(pageNumber: number, sectionType: SectionType): boolean {
+    return sectionType === SectionType.EVEN_PAGE ? pageNumber % 2 === 0 : pageNumber % 2 === 1;
+}
+
+export enum DocumentSkeletonState {
+    PENDING = 'pending',
+    CALCULATING = 'calculating',
+    READY = 'ready',
+    INVALID = 'invalid',
+}
+
+function removeDupPages(ctx: ILayoutContext) {
+    const hash = new Set();
+
+    ctx.skeleton.pages = ctx.skeleton.pages.filter((page) => {
+        const hasPage = hash.has(page);
+        hash.add(page);
+
+        return !hasPage;
+    });
+}
+
+function mergeContinuousDuplicatePages(pages: IDocumentSkeletonPage[]) {
+    for (let index = 1; index < pages.length;) {
+        const previousPage = pages[index - 1];
+        const page = pages[index];
+
+        if (previousPage.pageNumber !== page.pageNumber || previousPage.sectionId !== page.sectionId) {
+            index++;
+            continue;
+        }
+
+        const topOffset = previousPage.height;
+
+        for (const section of page.sections) {
+            section.top += topOffset;
+            section.parent = previousPage;
+            previousPage.sections.push(section);
+        }
+
+        page.skeDrawings?.forEach((drawing, drawingId) => {
+            drawing.aTop += topOffset;
+            previousPage.skeDrawings.set(drawingId, drawing);
+        });
+
+        page.skeTables?.forEach((table, tableId) => {
+            table.top += topOffset;
+            table.parent = previousPage;
+            previousPage.skeTables.set(tableId, table);
+        });
+
+        previousPage.height += page.height;
+        previousPage.width = Math.max(previousPage.width, page.width);
+        previousPage.ed = Math.max(previousPage.ed, page.ed);
+        pages.splice(index, 1);
+    }
+}
+
+interface IDistance {
+    coordInPage: boolean;
+    distance: number;
+    nestLevel: number;
+}
+
+interface INearestCache {
+    nearestNodeList: INodeInfo[];
+    nearestNodeDistanceList: IDistance[];
+}
+
+export interface IFindNodeRestrictions {
+    strict: boolean;
+    segmentId: string;
+    segmentPage: number;
+}
+
+function getPagePath(page: IDocumentSkeletonPage) {
+    const path: (string | number)[] = [];
+
+    // eslint-disable-next-line ts/no-explicit-any
+    let skeNode: any = page;
+    // eslint-disable-next-line ts/no-explicit-any
+    let parent: any = skeNode.parent;
+    while (parent) {
+        if (parent.page === skeNode && parent.parent?.columns) {
+            const index = parent.parent.columns.indexOf(parent);
+
+            if (index !== -1) {
+                path.unshift('columns', index, 'page');
+            }
+
+            skeNode = parent.parent;
+            parent = skeNode?.parent;
+            continue;
+        }
+
+        if (parent.pages) {
+            const index = parent.pages.indexOf(skeNode);
+
+            if (index !== -1) {
+                path.unshift('pages', index);
+            }
+        } else if (parent.cells) {
+            const index = parent.cells.indexOf(skeNode);
+
+            if (index !== -1) {
+                path.unshift('cells', index);
+            }
+        } else if (parent.rows) {
+            const index = parent.rows.indexOf(skeNode);
+
+            if (index !== -1) {
+                path.unshift('rows', index);
+            }
+        } else if (parent.skeTables && parent.skeTables.has(skeNode.tableId)) {
+            path.unshift('skeTables', skeNode.tableId);
+        } else if (parent.skeColumnGroups && parent.skeColumnGroups.has(skeNode.columnGroupId)) {
+            path.unshift('skeColumnGroups', skeNode.columnGroupId);
+        }
+
+        skeNode = parent;
+        parent = parent?.parent;
+    }
+
+    return path;
+}
+
+function getBoundaryGlyphInPage(page: IDocumentSkeletonPage, useLast: boolean) {
+    const sections = useLast ? [...page.sections].reverse() : page.sections;
+
+    for (const section of sections) {
+        const columns = useLast ? [...section.columns].reverse() : section.columns;
+        for (const column of columns) {
+            const lines = useLast ? [...column.lines].reverse() : column.lines;
+            for (const line of lines) {
+                const divides = useLast ? [...line.divides].reverse() : line.divides;
+                for (const divide of divides) {
+                    const glyphGroup = useLast ? [...divide.glyphGroup].reverse() : divide.glyphGroup;
+                    const glyph = glyphGroup.find((item) => item.content?.length);
+
+                    if (glyph) {
+                        return {
+                            section,
+                            column,
+                            line,
+                            divide,
+                            glyph,
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
+function isHitTestAddressableGlyph(glyph: IDocumentSkeletonGlyph): boolean {
+    return Boolean(glyph.content?.length) ||
+        (glyph.streamType === DataStreamTreeTokenType.PARAGRAPH && glyph.count > 0);
+}
+
+function resolveMostSpecificPageByCharIndex(page: IDocumentSkeletonPage, charIndex: number): IDocumentSkeletonPage {
+    for (const table of page.skeTables?.values() ?? []) {
+        for (const row of table.rows) {
+            for (const cell of row.cells) {
+                if (cell.isMergedCellCovered) {
+                    continue;
+                }
+
+                const { st, ed } = cell;
+
+                if (charIndex >= st && charIndex <= ed) {
+                    return resolveMostSpecificPageByCharIndex(cell, charIndex);
+                }
+            }
+        }
+    }
+
+    for (const columnGroup of page.skeColumnGroups?.values() ?? []) {
+        for (const column of columnGroup.columns) {
+            const { st, ed } = column;
+
+            if (charIndex >= st && charIndex <= ed) {
+                return resolveMostSpecificPageByCharIndex(column.page, charIndex);
+            }
+        }
+    }
+
+    return page;
+}
+
+function getSegmentPageFromRelativePath(
+    skeletonData: IDocumentSkeletonCached,
+    segmentPageIndex: number,
+    path: (string | number)[]
+): Nullable<IDocumentSkeletonPage> {
+    const rootPage = skeletonData.pages[segmentPageIndex];
+    if (rootPage == null) {
+        return null;
+    }
+
+    const { headerId, footerId, pageWidth } = rootPage;
+    const segmentPages = [
+        headerId == null ? null : skeletonData.skeHeaders.get(headerId)?.get(pageWidth),
+        footerId == null ? null : skeletonData.skeFooters.get(footerId)?.get(pageWidth),
+    ];
+
+    for (const segmentPage of segmentPages) {
+        if (segmentPage == null) {
+            continue;
+        }
+
+        const page = getPageFromPath({
+            ...skeletonData,
+            pages: [segmentPage],
+        }, ['pages', 0, ...path]);
+
+        if (page != null) {
+            return page;
+        }
+    }
+
+    return null;
+}
+
+export class DocumentSkeleton extends Skeleton {
+    private _dirty$ = new Subject<boolean>();
+    readonly dirty$ = this._dirty$.asObservable();
+
+    private _skeletonData: Nullable<IDocumentSkeletonCached>;
+
+    private _findLiquid: Liquid = new Liquid();
+
+    // Use for hyphenation.
+    private _hyphen = Hyphen.getInstance();
+
+    private _languageDetector = LanguageDetector.getInstance();
+
+    private _iteratorCount = 0;
+
+    private _initialWidth = 0;
+
+    private _paginationMetrics: Nullable<IDocumentPaginationMetrics> = null;
+
+    constructor(
+        private _docViewModel: DocumentViewModel,
+        localeService: LocaleService
+    ) {
+        super(localeService);
+    }
+
+    static create(docViewModel: DocumentViewModel, localeService: LocaleService) {
+        return new DocumentSkeleton(docViewModel, localeService);
+    }
+
+    override dispose(): void {
+        super.dispose();
+        this._skeletonData = null;
+        this._findLiquid = null as unknown as Liquid;
+        this._docViewModel.dispose();
+        this._initialWidth = 0;
+    }
+
+    getViewModel() {
+        return this._docViewModel;
+    }
+
+    /**
+     * Layout the document.
+     * PS: This method has significant impact on performance.
+     */
+    calculate(bounds?: IViewportInfo) {
+        if (!this.dirty) {
+            return;
+        }
+
+        const ctx = this._prepareLayoutContext();
+
+        // const start = +new Date();
+        this._skeletonData = this._createSkeleton(ctx, bounds);
+        this._paginationMetrics = ctx.paginationMetrics ?? null;
+        // console.log('skeleton calculate cost', +new Date() - start);
+        this._dirty$.next(true);
+    }
+
+    getSkeletonData() {
+        return this._skeletonData;
+    }
+
+    /**
+     * Returns a cloned snapshot of the most recent layout's bounded pagination counters.
+     * These diagnostics describe renderer work and are not part of the document model.
+     */
+    getPaginationMetrics(): Nullable<IDocumentPaginationMetrics> {
+        return this._paginationMetrics == null ? null : { ...this._paginationMetrics };
+    }
+
+    resetInitialWidth() {
+        this._initialWidth = 0;
+    }
+
+    getActualSize() {
+        const skeletonData = this.getSkeletonData();
+        let actualWidth = 0;
+        let actualHeight = 0;
+
+        skeletonData?.pages.forEach((page) => {
+            const { width, height } = page;
+            actualWidth = Math.max(this._initialWidth, width);
+            this._initialWidth = actualWidth;
+            actualHeight += height;
+        });
+
+        return {
+            actualWidth,
+            actualHeight,
+        };
+    }
+
+    private _getPageActualWidth(page: IDocumentSkeletonPage) {
+        let maxWidth = Number.NEGATIVE_INFINITY;
+        for (const section of page.sections) {
+            for (const column of section.columns) {
+                for (const line of column.lines) {
+                    let lineWidth = 0;
+                    for (const divide of line.divides) {
+                        for (const glyph of divide.glyphGroup) {
+                            lineWidth += glyph.width;
+                        }
+                    }
+                    maxWidth = Math.max(maxWidth, lineWidth);
+                }
+            }
+        }
+
+        return maxWidth;
+    }
+
+    getPageSize() {
+        return this.getViewModel().getDataModel().documentStyle.pageSize;
+    }
+
+    findPositionByGlyph(glyph: IDocumentSkeletonGlyph, segmentPage: number): Nullable<INodeSearch> {
+        const divide = glyph.parent;
+        const line = divide?.parent;
+        const column = line?.parent;
+        const section = column?.parent;
+        const page = section?.parent;
+        const skeletonData = this.getSkeletonData();
+
+        if (!divide || !column || !section || !page || !skeletonData) {
+            return;
+        }
+
+        const pageType = page.type;
+
+        const glyphIndex = divide.glyphGroup.indexOf(glyph);
+
+        const divideIndex = line.divides.indexOf(divide);
+
+        const lineIndex = column.lines.indexOf(line);
+
+        const columnIndex = section.columns.indexOf(column);
+
+        const sectionIndex = page.sections.indexOf(section);
+
+        let pageIndex = -1;
+
+        const path = getPagePath(page);
+
+        switch (pageType) {
+            case DocumentSkeletonPageType.HEADER:
+            case DocumentSkeletonPageType.FOOTER: {
+                pageIndex = 0;
+                break;
+            }
+
+            case DocumentSkeletonPageType.BODY: {
+                pageIndex = skeletonData.pages.indexOf(page);
+                break;
+            }
+
+            case DocumentSkeletonPageType.CELL: {
+                pageIndex = typeof path[1] === 'number' ? path[1] : segmentPage;
+                break;
+            }
+
+            default: {
+                throw new Error('Invalid page type');
+            }
+        }
+
+        return {
+            glyph: glyphIndex,
+            divide: divideIndex,
+            line: lineIndex,
+            column: columnIndex,
+            section: sectionIndex,
+            page: pageIndex,
+            segmentPage,
+            pageType,
+            path,
+        };
+    }
+
+    findCharIndexByPosition(position: INodePosition): Nullable<number> {
+        const glyph = this.findGlyphByPosition(position);
+        const divide = glyph?.parent;
+
+        if (divide == null) {
+            return;
+        }
+
+        const { st, glyphGroup } = divide;
+
+        let index = st;
+
+        for (const g of glyphGroup) {
+            if (g === glyph) {
+                break;
+            }
+
+            index += g.count;
+        }
+
+        return position.isBack ? index : (index + glyph!.count);
+    }
+
+    findNodePositionByCharIndex(charIndex: number, isBack: boolean = true, segmentId = '', segmentPIndex = -1): Nullable<INodePosition> {
+        const nodes = this._findNodeByIndex(charIndex, segmentId, segmentPIndex);
+
+        if (nodes == null) {
+            return;
+        }
+
+        const skeletonData = this.getSkeletonData();
+
+        if (!skeletonData) {
+            return;
+        }
+
+        const pages = skeletonData.pages;
+
+        const { glyph, divide, line, column, section, page, segmentPageIndex, pageType } = nodes;
+
+        const path = getPagePath(page);
+
+        let pageIndex = -1;
+
+        switch (pageType) {
+            case DocumentSkeletonPageType.HEADER:
+            case DocumentSkeletonPageType.FOOTER: {
+                pageIndex = 0;
+                break;
+            }
+
+            case DocumentSkeletonPageType.BODY: {
+                pageIndex = pages.indexOf(page);
+                break;
+            }
+
+            case DocumentSkeletonPageType.CELL: {
+                pageIndex = typeof path[1] === 'number' ? path[1] : segmentPageIndex;
+                break;
+            }
+
+            default: {
+                throw new Error('Invalid page type');
+            }
+        }
+
+        return {
+            glyph: divide.glyphGroup.indexOf(glyph),
+            divide: line.divides.indexOf(divide),
+            line: column.lines.indexOf(line),
+            column: section.columns.indexOf(column),
+            section: page.sections.indexOf(section),
+            page: pageIndex,
+            pageType,
+            segmentPage: segmentPageIndex,
+            isBack,
+            path,
+        };
+    }
+
+    findNodeByCharIndex(charIndex: number, segmentId = '', segmentPageIndex = -1): Nullable<IDocumentSkeletonGlyph> {
+        const nodes = this._findNodeByIndex(charIndex, segmentId, segmentPageIndex);
+
+        return nodes?.glyph;
+    }
+
+    findGlyphByPosition(position: Nullable<INodePosition>) {
+        if (position == null) {
+            return;
+        }
+
+        const skeletonData = this.getSkeletonData();
+
+        if (skeletonData == null) {
+            return;
+        }
+
+        const { pages, skeFooters, skeHeaders } = skeletonData;
+
+        const { divide, line, column, section, segmentPage, pageType, path, isBack } = position;
+
+        let { glyph } = position;
+
+        let skePage: Nullable<IDocumentSkeletonPage> = null;
+
+        if (pageType === DocumentSkeletonPageType.HEADER || pageType === DocumentSkeletonPageType.FOOTER) {
+            skePage = pages[segmentPage];
+            const { headerId, footerId, pageWidth } = skePage;
+
+            if (pageType === DocumentSkeletonPageType.HEADER) {
+                const skeHeader = skeHeaders.get(headerId)?.get(pageWidth);
+                if (skeHeader == null) {
+                    return;
+                } else {
+                    skePage = skeHeader;
+                }
+            } else if (pageType === DocumentSkeletonPageType.FOOTER) {
+                const skeFooter = skeFooters.get(footerId)?.get(pageWidth);
+                if (skeFooter == null) {
+                    return;
+                } else {
+                    skePage = skeFooter;
+                }
+            }
+        } else if (pageType === DocumentSkeletonPageType.CELL && path[0] !== 'pages') {
+            skePage = getSegmentPageFromRelativePath(skeletonData, segmentPage, path);
+        } else {
+            skePage = getPageFromPath(skeletonData, path);
+        }
+
+        if (skePage == null) {
+            return;
+        }
+
+        const glyphGroup =
+            skePage.sections[section].columns[column].lines[line].divides[divide].glyphGroup;
+
+        glyph = Math.min(glyph, glyphGroup.length - 1);
+
+        if (glyphGroup[glyph].glyphType === GlyphType.LIST) {
+            glyph += 1;
+        }
+
+        return glyphGroup[glyph];
+    }
+
+    findEditAreaByCoord(
+        coord: Vector2,
+        pageLayoutType: PageLayoutType,
+        pageMarginLeft: number,
+        pageMarginTop: number
+    ): {
+        editArea: DocumentEditArea;
+        pageNumber: number;
+        page: Nullable<IDocumentSkeletonPage>;
+    } {
+        const { x, y } = coord;
+        let editArea = DocumentEditArea.BODY;
+        let pageNumber = -1;
+        let pageSkeleton = null;
+        const skeletonData = this.getSkeletonData();
+
+        if (skeletonData == null) {
+            return {
+                editArea,
+                page: pageSkeleton,
+                pageNumber,
+            };
+        }
+
+        this._findLiquid.reset();
+
+        const { pages } = skeletonData;
+
+        for (let i = 0, len = pages.length; i < len; i++) {
+            const page = pages[i];
+
+            const { marginTop, marginBottom, pageWidth, pageHeight } = page;
+
+            if (
+                x > this._findLiquid.x && x < this._findLiquid.x + pageWidth &&
+                y > this._findLiquid.y && y < this._findLiquid.y + marginTop
+            ) {
+                editArea = DocumentEditArea.HEADER;
+                pageSkeleton = page;
+                pageNumber = i;
+                break;
+            }
+
+            if (
+                x > this._findLiquid.x && x < this._findLiquid.x + pageWidth &&
+                y > this._findLiquid.y + marginTop && y < this._findLiquid.y + pageHeight - marginBottom
+            ) {
+                editArea = DocumentEditArea.BODY;
+                pageSkeleton = page;
+                pageNumber = i;
+                break;
+            }
+
+            if (
+                x > this._findLiquid.x && x < this._findLiquid.x + pageWidth &&
+                y > this._findLiquid.y + pageHeight - marginBottom && y < this._findLiquid.y + pageHeight
+            ) {
+                editArea = DocumentEditArea.FOOTER;
+                pageSkeleton = page;
+                pageNumber = i;
+                break;
+            }
+
+            this._translatePage(page, pageLayoutType, pageMarginLeft, pageMarginTop);
+        }
+
+        return {
+            editArea,
+            page: pageSkeleton,
+            pageNumber,
+        };
+    }
+
+    findNodeByCoord(
+        coord: Vector2,
+        pageLayoutType: PageLayoutType,
+        pageMarginLeft: number,
+        pageMarginTop: number,
+        restrictions?: IFindNodeRestrictions
+    ): Nullable<INodeInfo> {
+        const { x, y } = coord;
+
+        const skeletonData = this.getSkeletonData();
+        if (skeletonData == null) {
+            return;
+        }
+
+        const cache: INearestCache = {
+            nearestNodeList: [],
+            nearestNodeDistanceList: [],
+        };
+
+        const { pages, skeHeaders, skeFooters } = skeletonData;
+        const editArea = this.findEditAreaByCoord(coord, pageLayoutType, pageMarginLeft, pageMarginTop).editArea;
+        const pageLength = pages.length;
+
+        this._findLiquid.reset();
+        if (restrictions == null) {
+            for (let pi = 0; pi < pageLength; pi++) {
+                const page = pages[pi];
+                const { headerId, footerId, pageWidth } = page;
+
+                let exactMatch = null;
+
+                if (editArea === DocumentEditArea.HEADER || editArea === DocumentEditArea.FOOTER) {
+                    const headerSke = skeHeaders.get(headerId)?.get(pageWidth) as IDocumentSkeletonPage;
+
+                    if (headerSke) {
+                        exactMatch = this._collectNearestNode(
+                            headerSke,
+                            DocumentSkeletonPageType.HEADER,
+                            page,
+                            headerId,
+                            pi,
+                            cache,
+                            x,
+                            y,
+                            pageLength
+                        );
+                    }
+
+                    const footerSke = skeFooters.get(footerId)?.get(pageWidth) as IDocumentSkeletonPage;
+
+                    if (footerSke) {
+                        exactMatch = exactMatch ?? this._collectNearestNode(
+                            footerSke,
+                            DocumentSkeletonPageType.FOOTER,
+                            page,
+                            footerId,
+                            pi,
+                            cache,
+                            x,
+                            y,
+                            pageLength
+                        );
+                    }
+                } else {
+                    const BODY_SEGMENT_ID = '';
+                    exactMatch = this._collectNearestNode(
+                        page,
+                        DocumentSkeletonPageType.BODY,
+                        page,
+                        BODY_SEGMENT_ID,
+                        pi,
+                        cache,
+                        x,
+                        y,
+                        pageLength
+                    );
+                }
+
+                if (exactMatch) {
+                    return exactMatch;
+                }
+
+                this._translatePage(page, pageLayoutType, pageMarginLeft, pageMarginTop);
+            }
+        } else {
+            const { segmentId, segmentPage, strict } = restrictions;
+            let exactMatch = null;
+
+            if (strict === false) {
+                for (let pi = 0; pi < pageLength; pi++) {
+                    const page = pages[pi];
+                    const { headerId, footerId, pageWidth } = page;
+
+                    if (segmentId !== '') {
+                        const headerSke = skeHeaders.get(headerId)?.get(pageWidth) as IDocumentSkeletonPage;
+
+                        if (headerSke) {
+                            exactMatch = this._collectNearestNode(
+                                headerSke,
+                                DocumentSkeletonPageType.HEADER,
+                                page,
+                                headerId,
+                                pi,
+                                cache,
+                                x,
+                                y,
+                                pageLength
+                            );
+                        }
+
+                        const footerSke = skeFooters.get(footerId)?.get(pageWidth) as IDocumentSkeletonPage;
+
+                        if (footerSke) {
+                            exactMatch = exactMatch ?? this._collectNearestNode(
+                                footerSke,
+                                DocumentSkeletonPageType.FOOTER,
+                                page,
+                                footerId,
+                                pi,
+                                cache,
+                                x,
+                                y,
+                                pageLength
+                            );
+                        }
+                    } else {
+                        const BODY_SEGMENT_ID = '';
+                        exactMatch = this._collectNearestNode(
+                            page,
+                            DocumentSkeletonPageType.BODY,
+                            page,
+                            BODY_SEGMENT_ID,
+                            pi,
+                            cache,
+                            x,
+                            y,
+                            pageLength
+                        );
+                    }
+
+                    if (exactMatch) {
+                        return exactMatch;
+                    }
+
+                    this._translatePage(page, pageLayoutType, pageMarginLeft, pageMarginTop);
+                }
+            } else {
+                for (let pi = 0; pi < pageLength; pi++) {
+                    const page = pages[pi];
+
+                    if (segmentId) {
+                        if (segmentPage !== pi) {
+                            this._translatePage(page, pageLayoutType, pageMarginLeft, pageMarginTop);
+                            continue;
+                        }
+
+                        const { headerId, pageWidth } = page;
+
+                        const segmentSke = segmentId === headerId ? skeHeaders.get(segmentId)?.get(pageWidth) : skeFooters.get(segmentId)?.get(pageWidth);
+                        if (segmentSke) {
+                            exactMatch = this._collectNearestNode(
+                                segmentSke,
+                                segmentId === headerId ? DocumentSkeletonPageType.HEADER : DocumentSkeletonPageType.FOOTER,
+                                page,
+                                segmentId,
+                                segmentPage,
+                                cache,
+                                x,
+                                y,
+                                pageLength
+                            );
+                        }
+                    } else {
+                        const BODY_SEGMENT_ID = '';
+                        exactMatch = this._collectNearestNode(
+                            page,
+                            DocumentSkeletonPageType.BODY,
+                            page,
+                            BODY_SEGMENT_ID,
+                            pi,
+                            cache,
+                            x,
+                            y,
+                            pageLength
+                        );
+                    }
+
+                    if (exactMatch) {
+                        return exactMatch;
+                    }
+
+                    this._translatePage(page, pageLayoutType, pageMarginLeft, pageMarginTop);
+                }
+            }
+        }
+
+        return this._getNearestNode(cache.nearestNodeList, cache.nearestNodeDistanceList);
+    }
+
+    private _collectNearestNode(
+        segmentPage: IDocumentSkeletonPage,
+        pageType: DocumentSkeletonPageType,
+        page: IDocumentSkeletonPage,
+        segmentId: string,
+        pi: number,
+        cache: INearestCache,
+        x: number,
+        y: number,
+        pageLength: number,
+        nestLevel: number = 0
+        // eslint-disable-next-line ts/no-explicit-any
+    ): any {
+        const { sections, skeTables, skeColumnGroups = new Map() } = segmentPage;
+        this._findLiquid.translateSave();
+
+        const pageLeft = this._findLiquid.x;
+        const pageRight = pageLeft + page.pageWidth; // Use page.pageWidth instead of segmentPage.pageWidth, because the segmentPage not include the margin left and right.
+        const pageTop = this._findLiquid.y + (pageType === DocumentSkeletonPageType.FOOTER ? page.pageHeight - segmentPage.pageHeight : 0);
+        const pageBottom = pageTop + segmentPage.pageHeight;
+
+        let pointInPage = x >= pageLeft
+            && x <= pageRight
+            && y >= pageTop
+            && y <= pageBottom;
+
+        // Handle the outmost page.
+        if (nestLevel === 0 && pageType === DocumentSkeletonPageType.BODY) {
+            const isFirstPage = pi === 0;
+            const isLastPage = pi === pageLength - 1;
+            // TODO: Use page margin top as page gap now, need to consider the page gap in the future.
+            const halfMarginTop = page.originMarginTop / 2;
+
+            // It's the only page, point always in page.
+            if (isFirstPage && isLastPage) {
+                pointInPage = true;
+            } else if (isFirstPage) {
+                pointInPage = y <= pageBottom + halfMarginTop;
+            } else if (isLastPage) {
+                pointInPage = y >= pageTop - halfMarginTop;
+            } else {
+                pointInPage = y >= pageTop - halfMarginTop && y <= pageBottom + halfMarginTop;
+            }
+        }
+
+        switch (pageType) {
+            case DocumentSkeletonPageType.HEADER: {
+                this._findLiquid.translatePagePadding({
+                    ...segmentPage,
+                    marginLeft: page.marginLeft, // Because header or footer margin Left is 0.
+                });
+                break;
+            }
+
+            case DocumentSkeletonPageType.FOOTER: {
+                const footerTop = page.pageHeight - segmentPage.height - segmentPage.marginBottom;
+                this._findLiquid.translate(page.marginLeft, footerTop);
+                break;
+            }
+
+            default: {
+                this._findLiquid.translatePagePadding(page);
+                break;
+            }
+        }
+
+        if (pointInPage) {
+            let nearestNodeDistanceY = Number.POSITIVE_INFINITY;
+
+            for (const section of sections) {
+                const { columns } = section;
+
+                this._findLiquid.translateSave();
+                this._findLiquid.translateSection(section);
+
+                for (const column of columns) {
+                    const { lines } = column;
+
+                    this._findLiquid.translateSave();
+                    this._findLiquid.translateColumn(column);
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        const { divides, type, lineHeight = 0 } = line;
+
+                        if (type === LineType.BLOCK) {
+                            continue;
+                        } else {
+                            this._findLiquid.translateSave();
+                            this._findLiquid.translateLine(line);
+
+                            const { y: startY } = this._findLiquid;
+
+                            const startY_fin = startY;
+
+                            const endY_fin = startY + lineHeight;
+
+                            const distanceY = Math.abs(y - endY_fin);
+
+                            const divideLength = divides.length;
+                            for (let i = 0; i < divideLength; i++) {
+                                const divide = divides[i];
+                                const { glyphGroup } = divide;
+
+                                this._findLiquid.translateSave();
+                                this._findLiquid.translateDivide(divide);
+
+                                const { x: startX } = this._findLiquid;
+
+                                for (const glyph of glyphGroup) {
+                                    if (!isHitTestAddressableGlyph(glyph)) {
+                                        continue;
+                                    }
+
+                                    const { width: glyphWidth, left: glyphLeft } = glyph;
+                                    const startX_fin = startX + glyphLeft;
+                                    const endX_fin = startX + glyphLeft + glyphWidth;
+                                    const distanceX = Math.abs(x - endX_fin);
+
+                                    // Handle pointer in the same line.
+                                    if (y >= startY_fin && y <= endY_fin) {
+                                        // Exact match glyph.
+                                        if (x >= startX_fin && x <= endX_fin) {
+                                            return {
+                                                node: glyph,
+                                                segmentPage: pageType === DocumentSkeletonPageType.BODY ? -1 : pi,
+                                                segmentId,
+                                                ratioX: x / (startX_fin + endX_fin),
+                                                ratioY: y / (startY_fin + endY_fin),
+                                            };
+                                        }
+
+                                        if (nearestNodeDistanceY !== Number.NEGATIVE_INFINITY) {
+                                            cache.nearestNodeList = [];
+                                            cache.nearestNodeDistanceList = [];
+                                        }
+                                        cache.nearestNodeList.push({
+                                            node: glyph,
+                                            segmentPage: pageType === DocumentSkeletonPageType.BODY ? -1 : pi,
+                                            segmentId,
+                                            ratioX: x / (startX_fin + endX_fin),
+                                            ratioY: y / (startY_fin + endY_fin),
+                                        });
+
+                                        cache.nearestNodeDistanceList.push({
+                                            coordInPage: pointInPage,
+                                            distance: distanceX,
+                                            nestLevel,
+                                        });
+
+                                        nearestNodeDistanceY = Number.NEGATIVE_INFINITY;
+                                        continue;
+                                    }
+
+                                    if (distanceY < nearestNodeDistanceY) {
+                                        nearestNodeDistanceY = distanceY;
+                                        cache.nearestNodeList = [];
+                                        cache.nearestNodeDistanceList = [];
+                                    }
+
+                                    if (distanceY === nearestNodeDistanceY) {
+                                        cache.nearestNodeList.push({
+                                            node: glyph,
+                                            segmentPage: pageType === DocumentSkeletonPageType.BODY ? -1 : pi,
+                                            segmentId,
+                                            ratioX: x / (startX_fin + endX_fin),
+                                            ratioY: y / (startY_fin + endY_fin),
+                                        });
+
+                                        cache.nearestNodeDistanceList.push({
+                                            coordInPage: pointInPage,
+                                            distance: distanceX,
+                                            nestLevel,
+                                        });
+                                    }
+                                }
+                                this._findLiquid.translateRestore();
+                            }
+                            this._findLiquid.translateRestore();
+                        }
+                    }
+                    this._findLiquid.translateRestore();
+                }
+
+                this._findLiquid.translateRestore();
+            }
+        }
+
+        let exactMatch = null;
+        if (skeTables.size > 0) {
+            const unitId = this._docViewModel.getDataModel().getUnitId?.() ?? '';
+            for (const table of skeTables.values()) {
+                const { top: tableTop, left: tableLeft, rows } = table;
+                const sourceTableId = getTableIdAndSliceIndex(table.tableId).tableId;
+                const viewport = getDocsTableRenderViewport(unitId, sourceTableId);
+
+                this._findLiquid?.translateSave();
+                this._findLiquid?.translate(tableLeft, tableTop);
+                if (hasDocsTableHorizontalViewport(viewport)) {
+                    const visibleLeft = this._findLiquid.x + page.marginLeft - (viewport.leadingInsetLeft ?? 0);
+                    const visibleRight = visibleLeft + viewport.viewportWidth;
+                    if (x < visibleLeft || x > visibleRight) {
+                        this._findLiquid?.translateRestore();
+                        continue;
+                    }
+
+                    this._findLiquid?.translate(-viewport.scrollLeft, 0);
+                }
+
+                for (const row of rows) {
+                    const { top: rowTop, cells, isRepeatRow } = row;
+
+                    // Cursor should not in repeat row.
+                    if (isRepeatRow) {
+                        continue;
+                    }
+
+                    this._findLiquid?.translateSave();
+                    this._findLiquid?.translate(0, rowTop);
+
+                    for (const cell of cells) {
+                        const { left: cellLeft } = cell;
+
+                        this._findLiquid?.translateSave();
+                        this._findLiquid?.translate(cellLeft, 0);
+
+                        exactMatch = exactMatch ?? this._collectNearestNode(
+                            cell,
+                            DocumentSkeletonPageType.CELL,
+                            cell,
+                            segmentId,
+                            pi,
+                            cache,
+                            x,
+                            y,
+                            pageLength,
+                            nestLevel + 1
+                        );
+
+                        this._findLiquid?.translateRestore();
+                    }
+
+                    this._findLiquid?.translateRestore();
+                }
+
+                this._findLiquid?.translateRestore();
+            }
+        }
+
+        if (skeColumnGroups.size > 0) {
+            for (const columnGroup of skeColumnGroups.values()) {
+                const { top: columnGroupTop, left: columnGroupLeft, width: columnGroupWidth, height: columnGroupHeight, columns } = columnGroup;
+                const absoluteColumnGroupLeft = this._findLiquid.x + columnGroupLeft;
+                const absoluteColumnGroupTop = this._findLiquid.y + columnGroupTop;
+
+                if (
+                    x < absoluteColumnGroupLeft ||
+                    x > absoluteColumnGroupLeft + columnGroupWidth ||
+                    y < absoluteColumnGroupTop ||
+                    y > absoluteColumnGroupTop + columnGroupHeight
+                ) {
+                    continue;
+                }
+
+                this._findLiquid?.translateSave();
+                this._findLiquid?.translate(columnGroupLeft, columnGroupTop);
+
+                for (const column of columns) {
+                    const absoluteColumnLeft = absoluteColumnGroupLeft + column.left;
+                    const absoluteColumnTop = absoluteColumnGroupTop + column.top;
+
+                    if (
+                        x < absoluteColumnLeft ||
+                        x > absoluteColumnLeft + column.width ||
+                        y < absoluteColumnTop ||
+                        y > absoluteColumnTop + column.height
+                    ) {
+                        continue;
+                    }
+
+                    const nestedCache: INearestCache = {
+                        nearestNodeList: [],
+                        nearestNodeDistanceList: [],
+                    };
+
+                    this._findLiquid?.translateSave();
+                    this._findLiquid?.translate(column.left, column.top);
+
+                    exactMatch = exactMatch ?? this._collectNearestNode(
+                        column.page,
+                        DocumentSkeletonPageType.CELL,
+                        column.page,
+                        segmentId,
+                        pi,
+                        nestedCache,
+                        x,
+                        y,
+                        pageLength,
+                        nestLevel + 1
+                    ) ?? this._getNearestNode(nestedCache.nearestNodeList, nestedCache.nearestNodeDistanceList);
+
+                    this._findLiquid?.translateRestore();
+                }
+
+                this._findLiquid?.translateRestore();
+            }
+        }
+
+        if (exactMatch) {
+            this._findLiquid.translateRestore();
+            return exactMatch;
+        }
+
+        this._findLiquid.translateRestore();
+    }
+
+    private _getNearestNode(nearestNodeList: INodeInfo[], nearestNodeDistanceList: IDistance[]) {
+        if (nearestNodeDistanceList.length === 0) {
+            return;
+        }
+
+        if (nearestNodeDistanceList.length === 1) {
+            return nearestNodeList[0];
+        }
+
+        let miniValue = nearestNodeDistanceList[0];
+
+        for (let i = 1; i < nearestNodeDistanceList.length; i++) {
+            const { distance, nestLevel, coordInPage } = nearestNodeDistanceList[i];
+
+            if (nestLevel > miniValue.nestLevel) {
+                miniValue = nearestNodeDistanceList[i];
+                continue;
+            }
+
+            if (nestLevel === miniValue.nestLevel) {
+                if (coordInPage === miniValue.coordInPage) {
+                    if (distance < miniValue.distance) {
+                        miniValue = nearestNodeDistanceList[i];
+                        continue;
+                    }
+                } else {
+                    if (coordInPage) {
+                        miniValue = nearestNodeDistanceList[i];
+                        continue;
+                    }
+                }
+            }
+        }
+
+        const miniValueIndex = nearestNodeDistanceList.indexOf(miniValue);
+
+        return nearestNodeList[miniValueIndex];
+    }
+
+    private _getPageBoundingBox(page: IDocumentSkeletonPage, pageLayoutType: PageLayoutType) {
+        const { pageWidth, pageHeight } = page;
+        const { x: startX, y: startY } = this._findLiquid;
+
+        let endX = -1;
+        let endY = -1;
+        if (pageLayoutType === PageLayoutType.VERTICAL) {
+            endX = pageWidth;
+            endY = startY + pageHeight;
+        } else if (pageLayoutType === PageLayoutType.HORIZONTAL) {
+            endX = startX + pageWidth;
+            endY = pageHeight;
+        }
+
+        return {
+            startX,
+            startY,
+            endX,
+            endY,
+        };
+    }
+
+    private _translatePage(
+        page: IDocumentSkeletonPage,
+        pageLayoutType: PageLayoutType,
+        pageMarginLeft: number,
+        pageMarginTop: number
+    ) {
+        this._findLiquid.translatePage(page, pageLayoutType, pageMarginLeft, pageMarginTop);
+    }
+
+    private _prepareLayoutContext(): ILayoutContext {
+        const viewModel = this.getViewModel();
+        const dataModel = viewModel.getDataModel();
+        const { headerTreeMap, footerTreeMap } = viewModel.getHeaderFooterTreeMap();
+        const { documentStyle, drawings, lists: customLists = {} } = dataModel;
+        const lists = {
+            ...PRESET_LIST_TYPE,
+            ...customLists,
+        };
+        const {
+            paragraphLineGapDefault = 0,
+            defaultTabStop = 10.5,
+            textStyle = {},
+            adjustLineHeightInTable = BooleanNumber.FALSE,
+        } = documentStyle;
+
+        const docsConfig: IDocsConfig = {
+            headerTreeMap,
+            footerTreeMap,
+            lists,
+            drawings,
+
+            localeService: this._localeService,
+            documentCompatibilityPolicy: getDocumentCompatibilityPolicy(documentStyle.documentFlavor),
+            paragraphLineGapDefault,
+            defaultTabStop,
+            documentTextStyle: textStyle,
+            adjustLineHeightInTable,
+        };
+
+        const skeleton = getNullSkeleton();
+
+        const { skeHeaders, skeFooters, skeListLevel, drawingAnchor } = skeleton;
+
+        const skeletonResourceReference: ISkeletonResourceReference = {
+            skeHeaders,
+            skeFooters,
+            skeListLevel,
+            drawingAnchor,
+        };
+
+        return {
+            viewModel,
+            dataModel,
+            skeleton,
+            skeletonResourceReference,
+            docsConfig,
+            layoutStartPointer: {
+                '': null, // '' is the main document.
+            },
+            isDirty: false,
+            floatObjectsCache: new Map(),
+            paragraphConfigCache: new Map(),
+            sectionBreakConfigCache: new Map(),
+            paragraphsOpenNewPage: new Set(),
+            paginationMetrics: {
+                constrainedParagraphs: 0,
+                noConstraintParagraphs: 0,
+                measuredLineCount: 0,
+                retryCount: 0,
+                movedLineCount: 0,
+                keepNextScanCount: 0,
+                peakCheckpointLineCount: 0,
+            },
+            hyphen: this._hyphen,
+            languageDetector: this._languageDetector,
+        };
+    }
+
+    /**
+     * \v COLUMN_BREAK
+     * \f PAGE_BREAK
+     * \0 DOCS_END
+     * \t TAB
+     *
+     * Needs to be changed：
+     * \r PARAGRAPH
+     * \n SECTION_BREAK
+     *
+     * \b customBlock: Scenarios where customBlock, images, mentions, etc. do not participate in the document flow.
+     *
+     * Table
+     * \x1A table start
+     * \x1B table row start
+     * \x1C table cell start
+     * \x1D table cell end
+     * \x1E table row end
+     * \x1F table end
+     *
+     * Special ranges within the document flow:：hyperlinks，field，structured document tags， bookmark，comment
+     * \x1F customRange start
+     * \x1E customRange end
+     *
+     * Split the document according to SectionBreak and perform layout calculations.
+     * @returns view model: skeleton
+     */
+
+    private _createSkeleton(ctx: ILayoutContext, _bounds?: IViewportInfo): IDocumentSkeletonCached {
+        // console.log('createSkeleton: iterate ', this._iteratorCount, 'times');
+        const { viewModel, skeleton, skeletonResourceReference } = ctx;
+
+        const allSkeletonPages = skeleton.pages;
+
+        let startSectionIndex = 0;
+
+        const layoutAnchor = ctx.layoutStartPointer[''];
+
+        // Reset layoutStartPointer.
+        ctx.layoutStartPointer[''] = null;
+
+        if (layoutAnchor != null) {
+            for (let sectionIndex = 0; sectionIndex < viewModel.getChildren().length; sectionIndex++) {
+                const sectionNode = viewModel.getChildren()[sectionIndex];
+                const { endIndex, startIndex } = sectionNode;
+                if (layoutAnchor >= startIndex && layoutAnchor <= endIndex) {
+                    startSectionIndex = sectionIndex;
+                    break;
+                }
+            }
+        }
+
+        // Loop the sections with the start section index.
+        for (let i = startSectionIndex, len = viewModel.getChildren().length; i < len; i++) {
+            const sectionNode = viewModel.getChildren()[i];
+            const sectionLayoutAnchor = i === startSectionIndex ? layoutAnchor : null;
+            const sectionBreakConfig = prepareSectionBreakConfig(ctx, i);
+            const { sectionType, columnProperties, columnSeparatorType, sectionTypeNext, pageNumberStart = 1, evenAndOddHeaders } = sectionBreakConfig;
+            const explicitPageNumberStart = viewModel.getSectionBreak(sectionNode.endIndex)?.pageNumberStart;
+            const effectiveSectionType = getEffectiveSectionType(sectionType);
+
+            let curSkeletonPage = getLastPage(allSkeletonPages);
+            let reuseCurrentPage = false;
+            let reuseNextColumn = false;
+
+            ctx.sectionBreakConfigCache.set(sectionNode.endIndex, sectionBreakConfig);
+
+            if (
+                effectiveSectionType === SectionType.NEXT_COLUMN &&
+                sectionLayoutAnchor == null &&
+                curSkeletonPage != null &&
+                hasCompatiblePageGeometry(curSkeletonPage, sectionBreakConfig)
+            ) {
+                updateBlockIndex(allSkeletonPages, -1, ctx.docsConfig.documentCompatibilityPolicy);
+                reuseNextColumn = this._addNewSectionByNextColumn(
+                    curSkeletonPage,
+                    columnProperties!,
+                    columnSeparatorType!
+                );
+            }
+
+            const hasCompatibleContinuousPage =
+                effectiveSectionType === SectionType.CONTINUOUS &&
+                curSkeletonPage != null &&
+                hasCompatiblePhysicalPage(curSkeletonPage, sectionBreakConfig);
+            if (hasCompatibleContinuousPage) {
+                updateBlockIndex(allSkeletonPages, -1, ctx.docsConfig.documentCompatibilityPolicy);
+            }
+
+            if (
+                hasCompatibleContinuousPage &&
+                curSkeletonPage != null &&
+                (sectionLayoutAnchor != null || hasAvailableContinuousSectionSpace(curSkeletonPage))
+            ) {
+                if (sectionLayoutAnchor != null) {
+                    this._restoreContinuousSection(curSkeletonPage, columnProperties!, columnSeparatorType!);
+                } else {
+                    this._addNewSectionByContinuous(curSkeletonPage, columnProperties!, columnSeparatorType!);
+                }
+                reuseCurrentPage = true;
+            } else if (reuseNextColumn) {
+                reuseCurrentPage = true;
+            } else if (sectionLayoutAnchor == null || curSkeletonPage == null) {
+                const reuseExplicitPageBreak =
+                    effectiveSectionType === SectionType.NEXT_PAGE &&
+                    curSkeletonPage?.breakType === BreakType.PAGE &&
+                    hasOnlyExplicitPageBoundaryMarkers(curSkeletonPage);
+                const previousSkeletonPage = allSkeletonPages.at(-2);
+                const reuseOverflowedSectionBoundary =
+                    effectiveSectionType === SectionType.NEXT_PAGE &&
+                    curSkeletonPage?.breakType === BreakType.SECTION &&
+                    previousSkeletonPage?.sectionId === curSkeletonPage.sectionId &&
+                    hasOnlyExplicitPageBoundaryMarkers(curSkeletonPage);
+                const reuseBoundaryPage = reuseExplicitPageBreak || reuseOverflowedSectionBoundary;
+                let nextPageNumber = reuseBoundaryPage
+                    ? explicitPageNumberStart ?? curSkeletonPage.pageNumber
+                    : curSkeletonPage == null
+                        ? pageNumberStart
+                        : explicitPageNumberStart ?? curSkeletonPage.pageNumber + 1;
+                if (reuseBoundaryPage) {
+                    allSkeletonPages.pop();
+                }
+                if (
+                    curSkeletonPage != null &&
+                    effectiveSectionType === SectionType.NEXT_PAGE &&
+                    explicitPageNumberStart != null &&
+                    evenAndOddHeaders === 1 &&
+                    (allSkeletonPages.length + 1) % 2 !== explicitPageNumberStart % 2
+                ) {
+                    allSkeletonPages.push(createSkeletonPage(
+                        ctx,
+                        sectionBreakConfig,
+                        skeletonResourceReference,
+                        curSkeletonPage.pageNumber + 1
+                    ));
+                }
+                if (
+                    curSkeletonPage != null &&
+                    (effectiveSectionType === SectionType.EVEN_PAGE || effectiveSectionType === SectionType.ODD_PAGE) &&
+                    !isTargetPageParity(nextPageNumber, effectiveSectionType)
+                ) {
+                    const fillerPage = createSkeletonPage(
+                        ctx,
+                        sectionBreakConfig,
+                        skeletonResourceReference,
+                        nextPageNumber
+                    );
+                    allSkeletonPages.push(fillerPage);
+                    nextPageNumber++;
+                }
+                curSkeletonPage = createSkeletonPage(
+                    ctx,
+                    sectionBreakConfig,
+                    skeletonResourceReference,
+                    nextPageNumber
+                );
+            }
+
+            // Calculate page layout, block structure
+            const { pages } = dealWithSection(
+                ctx,
+                viewModel,
+                sectionNode,
+                curSkeletonPage,
+                sectionBreakConfig,
+                sectionLayoutAnchor
+            );
+
+            const nextColumnProperties = i + 1 < len
+                ? prepareSectionBreakConfig(ctx, i + 1).columnProperties ?? []
+                : [];
+            if (
+                sectionTypeNext === SectionType.CONTINUOUS &&
+                columnProperties!.length > 0 &&
+                !hasSameColumnGeometry(columnProperties!, nextColumnProperties)
+            ) {
+                balanceFinalContinuousColumnSection(pages.at(-1) ?? curSkeletonPage);
+            }
+
+            if (reuseCurrentPage) {
+                const reusedFirstPage = pages.shift();
+                if (reusedFirstPage && allSkeletonPages.length > 0) {
+                    allSkeletonPages[allSkeletonPages.length - 1] = reusedFirstPage;
+                }
+            }
+
+            allSkeletonPages.push(...pages);
+
+            // The page needs to be reflowed due to floating objects.
+            if (ctx.isDirty) {
+                break;
+            }
+        }
+
+        // TODO: 10 is too small?
+        if (ctx.isDirty && this._iteratorCount < 10) {
+            this._iteratorCount++;
+            resetContext(ctx);
+            return this._createSkeleton(ctx, _bounds);
+        } else {
+            // Calculate page and section position information
+            this._iteratorCount = 0;
+            removeDupPages(ctx);
+            updateBlockIndex(skeleton.pages, -1, ctx.docsConfig.documentCompatibilityPolicy);
+            mergeContinuousDuplicatePages(skeleton.pages);
+            // Calculate inline drawing position and update.
+            updateInlineDrawingCoordsAndBorder(ctx, skeleton.pages);
+            for (const hSkeMap of skeleton.skeHeaders.values()) {
+                for (const page of hSkeMap.values()) {
+                    updateInlineDrawingCoordsAndBorder(ctx, [page]);
+                }
+            }
+            for (const fSkeMap of skeleton.skeFooters.values()) {
+                for (const page of fSkeMap.values()) {
+                    updateInlineDrawingCoordsAndBorder(ctx, [page]);
+                }
+            }
+            setPageParent(skeleton.pages, skeleton);
+
+            return skeleton;
+        }
+    }
+
+    // A page with multiple sections only occurs in SectionType.CONTINUOUS
+    private _addNewSectionByContinuous(
+        curSkeletonPage: IDocumentSkeletonPage,
+        columnProperties: ISectionColumnProperties[],
+        columnSeparatorType: ColumnSeparatorType
+    ) {
+        const sections = curSkeletonPage.sections;
+        const lastSection = sections[sections.length - 1];
+        const {
+            pageWidth,
+            pageHeight,
+            marginTop: curPageMT,
+            marginBottom: curPageMB,
+            marginLeft: curPageML,
+            marginRight: curPageMR,
+        } = curSkeletonPage;
+        const pageContentWidth = pageWidth - curPageML - curPageMR;
+        const pageContentHeight = pageHeight - curPageMT - curPageMB;
+        const lastSectionBottom = (lastSection?.top || 0) + (lastSection?.height || 0);
+        const newSection = createSkeletonSection(
+            columnProperties,
+            columnSeparatorType,
+            lastSectionBottom,
+            0,
+            pageContentWidth,
+            pageContentHeight - lastSectionBottom
+        );
+        newSection.parent = curSkeletonPage;
+        sections.push(newSection);
+    }
+
+    private _addNewSectionByNextColumn(
+        curSkeletonPage: IDocumentSkeletonPage,
+        columnProperties: ISectionColumnProperties[],
+        columnSeparatorType: ColumnSeparatorType
+    ): boolean {
+        const currentColumn = getLastNotFullColumnInfo(curSkeletonPage);
+        const nextColumnIndex = currentColumn == null ? 0 : currentColumn.index + 1;
+        const columnCount = columnProperties.length || 1;
+        if (nextColumnIndex >= columnCount) {
+            return false;
+        }
+
+        const {
+            pageWidth,
+            pageHeight,
+            marginTop,
+            marginBottom,
+            marginLeft,
+            marginRight,
+        } = curSkeletonPage;
+        const sectionTop = curSkeletonPage.sections[curSkeletonPage.sections.length - 1]?.top ?? 0;
+        const newSection = createSkeletonSection(
+            columnProperties,
+            columnSeparatorType,
+            sectionTop,
+            0,
+            pageWidth - marginLeft - marginRight,
+            pageHeight - marginTop - marginBottom - sectionTop
+        );
+        newSection.columns.slice(0, nextColumnIndex).forEach((column) => {
+            column.isFull = true;
+        });
+        newSection.parent = curSkeletonPage;
+        curSkeletonPage.sections.push(newSection);
+        return true;
+    }
+
+    private _restoreContinuousSection(
+        curSkeletonPage: IDocumentSkeletonPage,
+        columnProperties: ISectionColumnProperties[],
+        columnSeparatorType: ColumnSeparatorType
+    ) {
+        const section = curSkeletonPage.sections[curSkeletonPage.sections.length - 1];
+        if (section == null) {
+            return;
+        }
+
+        const pageContentWidth = curSkeletonPage.pageWidth - curSkeletonPage.marginLeft - curSkeletonPage.marginRight;
+        const pageContentHeight = curSkeletonPage.pageHeight - curSkeletonPage.marginTop - curSkeletonPage.marginBottom;
+        const restoredSection = createSkeletonSection(
+            columnProperties,
+            columnSeparatorType,
+            section.top,
+            0,
+            pageContentWidth,
+            pageContentHeight - section.top
+        );
+
+        for (const column of restoredSection.columns.slice(section.columns.length)) {
+            column.parent = section;
+            section.columns.push(column);
+        }
+        section.colCount = restoredSection.colCount;
+        section.height = restoredSection.height;
+    }
+
+    private _findNodeByIndex(charIndex: number, segmentId = '', segmentPageIndex = -1) {
+        const skeletonData = this.getSkeletonData();
+
+        if (skeletonData == null) {
+            return;
+        }
+
+        const { pages, skeFooters, skeHeaders } = skeletonData;
+
+        for (const page of pages) {
+            const curPageIndex = pages.indexOf(page);
+            if (segmentId && curPageIndex !== segmentPageIndex) {
+                continue;
+            }
+
+            const { pageWidth } = page;
+            let segmentPage = page;
+
+            if (segmentId) {
+                const maybeHeaderSke = skeHeaders.get(segmentId)?.get(pageWidth);
+                const maybeFooterSke = skeFooters.get(segmentId)?.get(pageWidth);
+                if (maybeHeaderSke) {
+                    segmentPage = maybeHeaderSke;
+                } else if (maybeFooterSke) {
+                    segmentPage = maybeFooterSke;
+                } else {
+                    continue;
+                }
+                segmentPage = resolveMostSpecificPageByCharIndex(segmentPage, charIndex);
+            } else {
+                segmentPage = resolveMostSpecificPageByCharIndex(page, charIndex);
+            }
+
+            const { sections, st, ed } = segmentPage;
+            const segmentPageParent = segmentPage.parent as { page?: IDocumentSkeletonPage; parent?: { columnGroupId?: string } } | undefined;
+            const isColumnSegmentPage = segmentId === '' &&
+                segmentPageParent?.page === segmentPage &&
+                segmentPageParent.parent?.columnGroupId;
+
+            if (charIndex < st || charIndex > ed) {
+                if (isColumnSegmentPage) {
+                    const boundary = getBoundaryGlyphInPage(segmentPage, charIndex >= ed);
+
+                    if (boundary) {
+                        return {
+                            page: segmentPage,
+                            pageType: segmentPage.type,
+                            segmentPageIndex,
+                            ...boundary,
+                        };
+                    }
+                }
+
+                continue;
+            }
+
+            for (const section of sections) {
+                const { columns, st, ed } = section;
+
+                if (charIndex < st || charIndex > ed) {
+                    continue;
+                }
+
+                for (const column of columns) {
+                    const { lines, st, ed } = column;
+
+                    if (charIndex < st || charIndex > ed) {
+                        continue;
+                    }
+
+                    for (const line of lines) {
+                        const { divides, st, ed } = line;
+                        const divideLength = divides.length;
+
+                        if (charIndex < st || charIndex > ed) {
+                            continue;
+                        }
+
+                        for (let i = 0; i < divideLength; i++) {
+                            const divide = divides[i];
+                            const { glyphGroup, st, ed } = divide;
+
+                            if (charIndex < st || charIndex > ed) {
+                                continue;
+                            }
+
+                            // Some glyph.content's length maybe great than 1, so the charIndex is not equal to glyphIndex.
+                            let delta = charIndex - st;
+
+                            for (const glyph of glyphGroup) {
+                                delta -= glyph.count;
+
+                                if (delta < 0) {
+                                    return {
+                                        page: segmentPage,
+                                        pageType: segmentPage.type,
+                                        section,
+                                        column,
+                                        line,
+                                        divide,
+                                        glyph,
+                                        segmentPageIndex,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (isColumnSegmentPage) {
+                const boundary = getBoundaryGlyphInPage(segmentPage, charIndex >= segmentPage.ed);
+
+                if (boundary) {
+                    return {
+                        page: segmentPage,
+                        pageType: segmentPage.type,
+                        segmentPageIndex,
+                        ...boundary,
+                    };
+                }
+            }
+        }
+    }
+}

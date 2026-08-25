@@ -1,0 +1,85 @@
+{
+    "name": "@univerjs/engine-render",
+    "version": "1.0.0-beta.2",
+    "private": false,
+    "description": "Canvas rendering engine for Univer documents, sheets, and slides.",
+    "author": "DreamNum Co., Ltd. <developer@univer.ai>",
+    "license": "Apache-2.0",
+    "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/univer"
+    },
+    "homepage": "https://univer.ai",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/dream-num/univer"
+    },
+    "bugs": {
+        "url": "https://github.com/dream-num/univer/issues"
+    },
+    "keywords": [
+        "univer",
+        "render-engine",
+        "canvas",
+        "layout",
+        "graphics"
+    ],
+    "exports": {
+        ".": "./src/index.ts",
+        "./*": "./src/*"
+    },
+    "main": "./src/index.ts",
+    "types": "./lib/types/index.d.ts",
+    "publishConfig": {
+        "access": "public",
+        "main": "./lib/es/index.js",
+        "module": "./lib/es/index.js",
+        "exports": {
+            ".": {
+                "import": "./lib/es/index.js",
+                "require": "./lib/cjs/index.js",
+                "types": "./lib/types/index.d.ts"
+            },
+            "./*": {
+                "import": "./lib/es/*",
+                "require": "./lib/cjs/*",
+                "types": "./lib/types/index.d.ts"
+            },
+            "./lib/*": "./lib/*"
+        }
+    },
+    "directories": {
+        "lib": "lib"
+    },
+    "files": [
+        "lib"
+    ],
+    "scripts": {
+        "prepare": "node --experimental-strip-types ./scripts/generate-hyphen-pattern-loaders.mts",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "coverage": "vitest run --coverage",
+        "typecheck": "tsc --noEmit",
+        "build:bundle": "univer-cli build --config tsdown.override.mts",
+        "build:types": "tsc -p tsconfig.node.json",
+        "build": "pnpm run build:bundle && pnpm run build:types"
+    },
+    "peerDependencies": {
+        "rxjs": ">=7.0.0"
+    },
+    "dependencies": {
+        "@floating-ui/dom": "^1.8.0",
+        "@floating-ui/utils": "^0.2.12",
+        "@univerjs/core": "workspace:*",
+        "franc-min": "^6.2.0"
+    },
+    "devDependencies": {
+        "@univerjs-infra/shared": "workspace:*",
+        "jest-canvas-mock": "^2.5.8",
+        "rollup-plugin-polyfill-node": "^0.13.0",
+        "rxjs": "^7.8.2",
+        "tsdown": "^0.22.14",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.11"
+    }
+}

@@ -1,0 +1,8 @@
+:root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { display: grid; grid-template-rows: auto 1fr; background: #f6f7f9; }
+#status { min-height: 30px; padding: 6px 12px; color: #445; background: #fff; border-bottom: 1px solid #e5e7eb; font-size: 12px; }
+#app { min-height: 0; background: #fff; }
+#app > pre { height: 100%; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; }
+body[data-readonly='true'] #app { pointer-events: none; }

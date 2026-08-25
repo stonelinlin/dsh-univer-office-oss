@@ -1,0 +1,83 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type enUS from './en-US';
+
+const locale: typeof enUS = {
+    design: {
+        Accessibility: {
+            closeBadge: 'Chiudi badge',
+            close: 'Chiudi',
+            previous: 'Precedente',
+            next: 'Successivo',
+            imageGallery: 'Galleria immagini',
+            image: 'Immagine {0} di {1}',
+            zoomIn: 'Ingrandisci',
+            zoomOut: 'Riduci',
+            resetZoom: 'Reimposta zoom',
+            increment: 'Incrementa',
+            decrement: 'Decrementa',
+        },
+        Confirm: {
+            cancel: 'annulla',
+            confirm: 'OK',
+        },
+        CascaderList: {
+            empty: 'Nessuno',
+        },
+        Calendar: {
+            year: 'Anno',
+            weekDays: ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'],
+            months: [
+                'Gen',
+                'Feb',
+                'Mar',
+                'Apr',
+                'Mag',
+                'Giu',
+                'Lug',
+                'Ago',
+                'Set',
+                'Ott',
+                'Nov',
+                'Dic',
+            ],
+            ariaLabels: {
+                previousMonth: 'Mese precedente',
+                nextMonth: 'Mese successivo',
+                selectYear: 'Seleziona anno',
+                selectMonth: 'Seleziona mese',
+            },
+        },
+        ColorPicker: {
+            more: 'Altri Colori',
+            cancel: 'annulla',
+            confirm: 'OK',
+        },
+        GradientColorPicker: {
+            linear: 'Lineare',
+            radial: 'Radiale',
+            angular: 'Angolare',
+            diamond: 'Diamante',
+            offset: 'Offset',
+            angle: 'Angolo',
+            delete: 'Elimina',
+            transparency: 'Trasparenza',
+        },
+    },
+};
+
+export default locale;

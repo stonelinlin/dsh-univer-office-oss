@@ -1,0 +1,128 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { FormatType } from '@univerjs/sheets';
+import type { LocaleKey } from '../../locale/types';
+import { ICommandService, LocaleService, Range, RegionService } from '@univerjs/core';
+import { Separator } from '@univerjs/design';
+import { SheetsSelectionsService } from '@univerjs/sheets';
+import {
+    getCurrencySymbolByLocale,
+    getPatternPreview,
+    getPatternType,
+    SetNumfmtCommand,
+    SheetsNumfmtCellContentController,
+} from '@univerjs/sheets-numfmt';
+import { ILayoutService, useDependency, useObservable } from '@univerjs/ui';
+import { useMemo } from 'react';
+import { OpenNumfmtPanelOperator } from '../../commands/operations/open.numfmt.panel.operation';
+import { MENU_OPTIONS } from '../../menu/menu';
+
+export const MORE_NUMFMT_TYPE_KEY = 'sheets-numfmt-ui.moreNumfmtType';
+export const OPTIONS_KEY = 'sheets-numfmt-ui.moreNumfmtType.options';
+
+export function MoreNumfmtType(props: { value?: string }) {
+    const { value } = props;
+    const localeService = useDependency(LocaleService);
+    const text = value ?? localeService.t<LocaleKey>('sheets-numfmt-ui.general');
+
+    return <span className="univer-text-sm">{text}</span>;
+};
+
+export function Options() {
+    const commandService = useDependency(ICommandService);
+    const localeService = useDependency(LocaleService);
+    const regionService = useDependency(RegionService);
+    const layoutService = useDependency(ILayoutService);
+    const sheetsNumfmtCellContentController = useDependency(SheetsNumfmtCellContentController);
+    const direction = useObservable(localeService.direction$, localeService.getDirection());
+    const region = useObservable(regionService.currentRegion$, regionService.getCurrentRegion());
+
+    const selectionManagerService = useDependency(SheetsSelectionsService);
+    const setNumfmt = (pattern: string | null) => {
+        const selection = selectionManagerService.getCurrentLastSelection();
+        if (!selection) {
+            return;
+        }
+
+        const range = selection.range;
+        const values: Array<{ row: number; col: number; pattern?: string; type?: FormatType }> = [];
+        Range.foreach(range, (row, col) => {
+            if (pattern) {
+                values.push({ row, col, pattern, type: getPatternType(pattern) });
+            } else {
+                values.push({ row, col });
+            }
+        });
+        commandService.executeCommand(SetNumfmtCommand.id, { values });
+
+        layoutService.focus();
+    };
+
+    const menuOptions = useMemo(() => {
+        const currencySymbol = getCurrencySymbolByLocale(region);
+        return MENU_OPTIONS(currencySymbol);
+    }, [region]);
+
+    const handleClick = (index: number) => {
+        if (index === 0) {
+            setNumfmt(null);
+        } else if (index === menuOptions.length - 1) {
+            // CATUION: This is a command, not a menu item
+            commandService.executeCommand(OpenNumfmtPanelOperator.id);
+            layoutService.focus();
+        } else {
+            const item = menuOptions[index] as { pattern: string };
+            item.pattern && setNumfmt(item.pattern);
+        }
+    };
+
+    const defaultValue = 1220;
+
+    return (
+        <div dir={direction} className="univer-grid univer-gap-1 univer-p-1.5">
+            {menuOptions.map((item, index) => {
+                if (item === '|') {
+                    return <Separator key={index} />;
+                }
+
+                return (
+                    <div
+                        key={index}
+                        className={`
+                          univer-flex univer-h-7 univer-cursor-default univer-items-center univer-justify-between
+                          univer-gap-6 univer-rounded univer-px-2 univer-text-sm
+                          hover:univer-bg-gray-100
+                          dark:hover:!univer-bg-gray-700
+                        `}
+                        onClick={() => handleClick(index)}
+                    >
+                        <span>{localeService.t<LocaleKey>(item.label)}</span>
+
+                        <span
+                            className={`
+                              univer-text-xs univer-text-gray-500
+                              dark:!univer-text-gray-400
+                            `}
+                        >
+                            {item.pattern ? getPatternPreview(item.pattern || '', defaultValue, sheetsNumfmtCellContentController.locale).result.trim() : ''}
+                        </span>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};

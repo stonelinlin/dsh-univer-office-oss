@@ -24,6 +24,19 @@ export interface FileStatusRequest extends ScopedFileRequest {
   readonly unitId?: UnitId
 }
 
+/** Browser Viewer request for one local Unit snapshot. */
+export interface ViewerUnitRequest extends ScopedFileRequest {
+  readonly worktreeId?: WorktreeId
+  readonly unitId?: UnitId
+}
+
+/** Browser Viewer write, permitted only for a draft worktree. */
+export interface SaveViewerUnitRequest extends ScopedFileRequest {
+  readonly worktreeId: WorktreeId
+  readonly unitId: UnitId
+  readonly snapshot: Record<string, JsonValue>
+}
+
 /** Request for creating an empty Univer file. */
 export interface NewUniverFileRequest extends ScopedFileRequest {}
 
@@ -84,113 +97,6 @@ export interface ExportUnitContentRequest extends ScopedFileRequest {
   readonly worktreeId?: WorktreeId
 }
 
-/** Request for deterministic Slide layout analysis. */
-export interface LintUnitLayoutRequest extends ScopedFileRequest {
-  readonly unitId: UnitId
-  readonly worktreeId?: WorktreeId
-  readonly pages?: readonly (number | string)[]
-}
-
-/** Unit-specific viewport requested from the browser screenshot runtime. */
-export type ScreenshotTarget =
-  | {
-      readonly kind: 'sheet-range'
-      readonly range: string
-      readonly sheetName?: string
-      readonly scale?: number
-    }
-  | {
-      readonly kind: 'paged-unit'
-      readonly pages?: readonly (number | string)[]
-      readonly contactSheet?: {
-        readonly tile?: { readonly columns: number; readonly rows: number }
-      }
-      readonly scale?: number
-    }
-  | {
-      readonly kind: 'board-content'
-      readonly elementIds?: readonly string[]
-      readonly padding?: number
-      readonly region?: {
-        readonly left: number
-        readonly top: number
-        readonly width: number
-        readonly height: number
-      }
-      readonly scale?: number
-    }
-  | {
-      readonly kind: 'unit-viewport'
-      readonly scale: number
-    }
-
-/** Request for rendering one Unit into workspace PNG files. */
-export interface ScreenshotUnitRequest extends ScopedFileRequest {
-  readonly unitId: UnitId
-  readonly worktreeId?: WorktreeId
-  readonly output: string
-  readonly outputWorkspace: WorkspacePath
-  readonly target?: ScreenshotTarget
-}
-
-/** One PNG returned to the Tools Consumer before attachment persistence. */
-export interface ScreenshotServiceImage {
-  readonly data: string
-  readonly height: number
-  readonly mediaType: 'image/png'
-  readonly name: string
-  readonly path: string
-  readonly width: number
-  readonly metadata: JsonValue
-}
-
-/** Browser screenshot result with bytes encoded for the same-process Service boundary. */
-export interface ScreenshotServiceResult {
-  readonly ok: true
-  readonly operation: 'screenshot'
-  readonly file: string
-  readonly result: {
-    readonly unitId: string
-    readonly unitType: UniverUnitKind
-    readonly images: readonly ScreenshotServiceImage[]
-  }
-}
-
-/** Resource-library operation over the bundled multi-registry manifest. */
-export type ResourceOperationRequest =
-  | { readonly action: 'registries' }
-  | {
-      readonly action: 'find'
-      readonly queries: readonly string[]
-      readonly registries?: readonly string[]
-      readonly limit?: number
-    }
-  | { readonly action: 'read'; readonly handle: string }
-  | {
-      readonly action: 'export'
-      readonly handles: readonly string[]
-      readonly output: string
-      readonly outputWorkspace: WorkspacePath
-    }
-  | { readonly action: 'clear-cache' }
-
-/** Structured resource result that does not expose Provider cache paths. */
-export interface UniverResourceResult {
-  readonly ok: true
-  readonly operation: 'resources'
-  readonly result: JsonValue
-}
-
-/** Request for compiling one SVG and applying it to a Slide page. */
-export interface CompileSvgRequest extends ScopedFileRequest {
-  readonly source: string
-  readonly sourceWorkspace: WorkspacePath
-  readonly worktreeId: WorktreeId
-  readonly unitId: UnitId
-  readonly page: number
-  readonly mode?: 'replace' | 'add'
-}
-
 /** Version-matched Facade reference lookup. */
 export type ApiReferenceRequest =
   | {
@@ -204,7 +110,7 @@ export type ApiReferenceRequest =
 /** Structured operation result logged in the DSH session. */
 export interface UniverOperationResult {
   readonly ok: true
-  readonly operation: 'new' | 'status' | 'inspect' | 'execute' | 'import' | 'export' | 'lint' | 'screenshot' | 'compile-svg' | 'unit' | 'worktree'
+  readonly operation: 'new' | 'status' | 'inspect' | 'execute' | 'import' | 'export' | 'unit' | 'worktree'
   readonly file: string
   readonly result: JsonValue
 }
@@ -231,9 +137,7 @@ export interface UniverServiceMethods {
   executeUnitContent(request: ExecuteUnitContentRequest, signal?: AbortSignal): Promise<UniverOperationResult>
   importUnitContent(request: ImportUnitContentRequest, signal?: AbortSignal): Promise<UniverOperationResult>
   exportUnitContent(request: ExportUnitContentRequest, signal?: AbortSignal): Promise<UniverOperationResult>
-  lintUnitLayout(request: LintUnitLayoutRequest, signal?: AbortSignal): Promise<UniverOperationResult>
-  screenshotUnit(request: ScreenshotUnitRequest, signal?: AbortSignal): Promise<ScreenshotServiceResult>
-  compileSvg(request: CompileSvgRequest, signal?: AbortSignal): Promise<UniverOperationResult>
   apiReference(request: ApiReferenceRequest): Promise<UniverApiResult>
-  resources(request: ResourceOperationRequest, signal?: AbortSignal): Promise<UniverResourceResult>
+  viewerUnit(request: ViewerUnitRequest): Promise<JsonValue>
+  saveViewerUnit(request: SaveViewerUnitRequest): Promise<JsonValue>
 }

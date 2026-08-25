@@ -1,0 +1,754 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type enUS from './en-US';
+
+const locale: typeof enUS = {
+    ASC: {
+        description: '全角 (2 バイト) の英数カナ文字を半角 (1 バイト) の文字に変換します。',
+        abstract: '全角 (2 バイト) の英数カナ文字を半角 (1 バイト) の文字に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/asc-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '文字列または変換する文字列を含むセルの参照を指定します。 文字列に全角文字が含まれない場合は、文字列は変換されません。' },
+        },
+    },
+    ARRAYTOTEXT: {
+        description: '指定した範囲のテキスト値の配列を返します。',
+        abstract: '指定した範囲のテキスト値の配列を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/arraytotext-function',
+            },
+        ],
+        functionParameter: {
+            array: { name: '配列', detail: '文字列として返す配列。' },
+            format: { name: '書式', detail: '返されるデータの形式。次の 2 つの値のいずれかを指定できます。\n0 既定。 読みやすい簡潔な形式。 \n1 エスケープ文字と行の区切り文字を含む厳格なフォーマット。 数式バーに入力したときに解析できる文字列を生成します。 返された文字列は、ブーリアン、数値、エラーを除き、引用符でカプセル化されます。' },
+        },
+    },
+    BAHTTEXT: {
+        description: '数値を四捨五入し、バーツ通貨書式を設定した文字列に変換します。',
+        abstract: '数値を四捨五入し、バーツ通貨書式を設定した文字列に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/bahttext-function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '文字列に変換する数値、数値を含むセルの参照、または戻り値が数値となる数式を指定します。' },
+        },
+    },
+    CHAR: {
+        description: '数値で指定された文字を返します。',
+        abstract: '数値で指定された文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/char-function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '変換する文字を表す 1 ～ 255 の範囲内の数値を指定します。 文字は、コンピューターで使用されている文字セットから返されます。' },
+        },
+    },
+    CLEAN: {
+        description: '文字列から印刷できない文字を削除します。',
+        abstract: '文字列から印刷できない文字を削除します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/clean-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '印刷できない文字を削除するワークシートの文字データを指定します。' },
+        },
+    },
+    CODE: {
+        description: 'テキスト文字列内の先頭文字の数値コードを返します。',
+        abstract: 'テキスト文字列内の先頭文字の数値コードを返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/code-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '先頭文字のコード番号を調べる文字列を指定します。' },
+        },
+    },
+    CONCAT: {
+        description: '複数の範囲や文字列からのテキストを結合しますが、区切り記号または IgnoreEmpty 引数は提供しません。',
+        abstract: '複数の範囲や文字列からのテキストを結合しますが、区切り記号または IgnoreEmpty 引数は提供しません',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/concat-function',
+            },
+        ],
+        functionParameter: {
+            text1: { name: '文字列 1', detail: '結合するテキスト項目。 文字列またはセルの範囲などの文字列の配列。' },
+            text2: { name: '文字列 2', detail: '結合する追加のテキスト項目。 テキスト項目には最大 253 のテキスト引数がを設定可能です。 各引数には、文字列、またはセルの範囲などの文字列の配列を指定できます。' },
+        },
+    },
+    CONCATENATE: {
+        description: '複数の文字列を結合して 1 つの文字列にまとめます。',
+        abstract: '複数の文字列を結合して 1 つの文字列にまとめます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/concatenate-function',
+            },
+        ],
+        functionParameter: {
+            text1: { name: '文字列 1', detail: '結合する最初の項目です。 この項目には、テキスト値、数字、セル参照のいずれかを指定できます。' },
+            text2: { name: '文字列 2', detail: '結合するその他の文字列です。 最大で 255 個の項目、合計 8,192 文字を指定できます。' },
+        },
+    },
+    DBCS: {
+        description: '文字列内の半角 (1 バイト) の英数カナ文字を全角 (2 バイト) の文字に変換します。',
+        abstract: '文字列内の半角 (1 バイト) の英数カナ文字を全角 (2 バイト) の文字に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/dbcs-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '文字列または変換する文字列を含むセルの参照を指定します。 文字列に半角の英数カナ文字が含まれない場合は、文字列は変更されません。' },
+        },
+    },
+    DOLLAR: {
+        description: '通貨形式を使用して数値をテキストに変換します',
+        abstract: '通貨形式を使用して数値をテキストに変換します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/dollar-function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '数値、数値を含むセルの参照、または結果が数値になる数式を指定します。' },
+            decimals: { name: '桁数', detail: '小数点以下の桁数を指定します。 負の値の場合、数値は小数点の左側に丸められます。 桁数を省略すると、2 を指定したと見なされます。' },
+        },
+    },
+    EXACT: {
+        description: '2 つの文字列が等しいかどうかを判定します。',
+        abstract: '2 つの文字列が等しいかどうかを判定します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/exact-function',
+            },
+        ],
+        functionParameter: {
+            text1: { name: '文字列1', detail: '一方の文字列を指定します。' },
+            text2: { name: '文字列2', detail: 'もう一方の文字列を指定します。' },
+        },
+    },
+    FIND: {
+        description: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されます。',
+        abstract: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/this-article-has-been-retired',
+            },
+        ],
+        functionParameter: {
+            findText: { name: '検索文字列', detail: '「検索するテキスト」で検索する文字列。' },
+            withinText: { name: '検索するテキスト', detail: '「検索文字列」を検索する最初のテキスト。' },
+            startNum: { name: '開始位置', detail: '「検索するテキスト」内の検索を開始する文字位置。省略した場合は、値 1 が想定されます。' },
+        },
+    },
+    FINDB: {
+        description: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されます。',
+        abstract: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/this-article-has-been-retired',
+            },
+        ],
+        functionParameter: {
+            findText: { name: '検索文字列', detail: '「検索するテキスト」で検索する文字列。' },
+            withinText: { name: '検索するテキスト', detail: '「検索文字列」を検索する最初のテキスト。' },
+            startNum: { name: '開始位置', detail: '「検索するテキスト」内の検索を開始する文字位置。省略した場合は、値 1 が想定されます。' },
+        },
+    },
+    FIXED: {
+        description: '数値を四捨五入し、書式設定した文字列に変換します。',
+        abstract: '数値を四捨五入し、書式設定した文字列に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/fixed-function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '四捨五入して文字列に変換する数値を指定します。' },
+            decimals: { name: '桁数', detail: '小数点以下の桁数を指定します。 負の値の場合、数値は小数点の左側に丸められます。 桁数を省略すると、2 を指定したと見なされます。' },
+            noCommas: { name: '桁区切り', detail: '返される文字列をカンマ (,) で桁区切りするかどうかを論理値で指定します。TRUE を指定すると、桁区切りは行われません。' },
+        },
+    },
+    LEFT: {
+        description: '文字列の先頭 (左端) から指定された文字数の文字を返します。',
+        abstract: '文字列の先頭 (左端) から指定された文字数の文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/left-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '取り出す文字を含む文字列を指定します。' },
+            numChars: { name: '文字数', detail: '取り出す文字数 (文字列の左端からの文字数) を指定します。' },
+        },
+    },
+    LEFTB: {
+        description: '文字列の先頭 (左端) から指定された文字数の文字を返します。',
+        abstract: '文字列の先頭 (左端) から指定された文字数の文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/left-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '取り出す文字を含む文字列を指定します。' },
+            numBytes: { name: 'バイト数', detail: '取り出す文字数をバイト数で指定します。' },
+        },
+    },
+    LEN: {
+        description: 'は、文字列の文字数を返します。',
+        abstract: 'は、文字列の文字数を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/len-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '文字数またはバイト数を調べる文字列を指定します。 スペースは文字として数えられます。' },
+        },
+    },
+    LENB: {
+        description: 'は、文字列のバイト数を返します。',
+        abstract: 'は、文字列のバイト数を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/len-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '文字数またはバイト数を調べる文字列を指定します。 スペースは文字として数えられます。' },
+        },
+    },
+    LOWER: {
+        description: '文字列に含まれる英字をすべて小文字に変換します。',
+        abstract: '文字列に含まれる英字をすべて小文字に変換します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/lower-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '小文字に変換する文字列を指定します。' },
+        },
+    },
+    MID: {
+        description: '文字列の任意の位置から指定された文字数の文字を返します。',
+        abstract: '文字列の任意の位置から指定された文字数の文字を返します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/mid-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '取り出す文字を含む文字列を指定します。' },
+            startNum: { name: '開始位置', detail: '文字列から取り出す先頭文字の位置を数値で指定します。' },
+            numChars: { name: '文字数', detail: '取り出す文字数を指定します。' },
+        },
+    },
+    MIDB: {
+        description: '文字列の任意の位置から指定された文字数の文字を返します。',
+        abstract: '文字列の任意の位置から指定された文字数の文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/mid-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '取り出す文字を含む文字列を指定します。' },
+            startNum: { name: '開始位置', detail: '文字列から取り出す先頭文字の位置を数値で指定します。' },
+            numBytes: { name: 'バイト数', detail: '取り出す文字数をバイト数で指定します。' },
+        },
+    },
+    NUMBERSTRING: {
+        description: '数字を中国語の文字列に変換する',
+        abstract: '数字を中国語の文字列に変換する',
+        links: [
+            {
+                title: '指導',
+                url: 'https://www.wps.cn/learning/course/detail/id/340.html?chan=pc_kdocs_function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '中国語の文字列に変換される数値。' },
+            type: { name: 'タイプ', detail: '返される結果のタイプ。\n1. 中国語小文字 \n2. 中国語の文字を大文字にする \n3. 漢字の読み書き' },
+        },
+    },
+    NUMBERVALUE: {
+        description: '文字列をロケールに依存しない方法で数値に変換します。',
+        abstract: '文字列をロケールに依存しない方法で数値に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/numbervalue-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '数値に変換するテキスト。' },
+            decimalSeparator: { name: '小数点区切り文字', detail: '結果の整数部分と小数部を区切るために使用される文字。' },
+            groupSeparator: { name: 'グループ区切り文字', detail: 'の数値のグループを区切るために使用される文字。' },
+        },
+    },
+    PHONETIC: {
+        description: '文字列からふりがなを抽出します。',
+        abstract: '文字列からふりがなを抽出します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/phonetic-function',
+            },
+        ],
+        functionParameter: {
+            reference: { name: '参照', detail: 'ふりがなを取り出す文字列、セル範囲、または参照です。' },
+        },
+    },
+    PROPER: {
+        description: '文字列に含まれる英単語の先頭文字だけを大文字に変換します。',
+        abstract: '文字列に含まれる英単語の先頭文字だけを大文字に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/proper-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '引用符で囲まれたテキスト、テキストを返す数式、または部分的に大文字にするテキストを含むセルへの参照。' },
+        },
+    },
+    REGEXEXTRACT: {
+        description: '正規表現と最初に一致する部分文字列を抽出します。',
+        abstract: '正規表現と最初に一致する部分文字列を抽出します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.google.com/docs/answer/3098244?hl=ja',
+            },
+        ],
+        functionParameter: {
+            text: { name: 'テキスト', detail: 'ヒント: 上の例では 2 列のデータが返されます（最初に「値」、2 番目に「抽出」）。' },
+            regularExpression: { name: '正規表現', detail: 'この正規表現に一致する最初のテキスト部分が返されます。' },
+        },
+    },
+    REGEXMATCH: {
+        description: '正規表現に一致するテキストの一部を検索します。',
+        abstract: '正規表現に一致するテキストの一部を検索します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.google.com/docs/answer/3098292?hl=ja',
+            },
+        ],
+        functionParameter: {
+            text: { name: 'テキスト', detail: '正規表現に対して検証するテキストです。' },
+            regularExpression: { name: '正規表現', detail: 'テキストを検証する正規表現です。' },
+        },
+    },
+    REGEXREPLACE: {
+        description: '正規表現を使用して、テキスト文字列の一部を別のテキスト文字列に置き換えます。',
+        abstract: '正規表現を使用して、テキスト文字列の一部を別のテキスト文字列に置き換えます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.google.com/docs/answer/3098245?hl=ja',
+            },
+        ],
+        functionParameter: {
+            text: { name: 'テキスト', detail: '一部を置換する対象のテキストです。' },
+            regularExpression: { name: '正規表現', detail: 'この正規表現に一致するテキスト内のすべてのインスタンスが置き換えられます。' },
+            replacement: { name: '置換', detail: '元のテキストに挿入されるテキストです。' },
+        },
+    },
+    REPLACE: {
+        description: '文字列中の指定された数の文字を他の文字に置き換えます。',
+        abstract: '文字列中の指定された数の文字を他の文字に置き換えます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/replace-function',
+            },
+        ],
+        functionParameter: {
+            oldText: { name: '文字列', detail: '置き換えを行う文字列を指定します。' },
+            startNum: { name: '開始位置', detail: '置換されるテキスト内の最初の文字の位置。' },
+            numChars: { name: '文字数', detail: '置換す文字数を指定します。' },
+            newText: { name: '置換文字列', detail: '文字列の一部と置き換える文字列を指定します。' },
+        },
+    },
+    REPLACEB: {
+        description: '文字列中の指定された数の文字を他の文字に置き換えます。',
+        abstract: '文字列中の指定された数の文字を他の文字に置き換えます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/replace-function',
+            },
+        ],
+        functionParameter: {
+            oldText: { name: '文字列', detail: '置き換えを行う文字列を指定します。' },
+            startNum: { name: '開始位置', detail: '置換されるテキスト内の最初の文字の位置。' },
+            numBytes: { name: 'バイト数', detail: '置換す文字数をバイト数で指定します。' },
+            newText: { name: '置換文字列', detail: '文字列の一部と置き換える文字列を指定します。' },
+        },
+    },
+    REPT: {
+        description: '文字列を指定された回数だけ繰り返して表示します。',
+        abstract: '文字列を指定された回数だけ繰り返して表示します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/rept-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '繰り返す文字列を指定します。' },
+            numberTimes: { name: '繰り返し回数', detail: '文字列を繰り返す回数を、正の数値で指定します。' },
+        },
+    },
+    RIGHT: {
+        description: '文字列の末尾 (右端) から指定された文字数の文字を返します。',
+        abstract: '文字列の末尾 (右端) から指定された文字数の文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/right-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '取り出す文字を含む文字列を指定します。' },
+            numChars: { name: '文字数', detail: '取り出す文字数 (文字列の末尾からの文字数) を指定します。' },
+        },
+    },
+    RIGHTB: {
+        description: '文字列の末尾 (右端) から指定された文字数の文字を返します。',
+        abstract: '文字列の末尾 (右端) から指定された文字数の文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/right-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '取り出す文字を含む文字列を指定します。' },
+            numBytes: { name: 'バイト数', detail: '取り出す文字数をバイト数で指定します。' },
+        },
+    },
+    SEARCH: {
+        description: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されません。',
+        abstract: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されません。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/search-function',
+            },
+        ],
+        functionParameter: {
+            findText: { name: '検索文字列', detail: '「検索するテキスト」で検索する文字列。' },
+            withinText: { name: '検索するテキスト', detail: '「検索文字列」を検索する最初のテキスト。' },
+            startNum: { name: '開始位置', detail: '「検索するテキスト」内の検索を開始する文字位置。省略した場合は、値 1 が想定されます。' },
+        },
+    },
+    SEARCHB: {
+        description: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されません。',
+        abstract: '指定された文字列を他の文字列の中で検索します。大文字と小文字は区別されません。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/search-function',
+            },
+        ],
+        functionParameter: {
+            findText: { name: '検索文字列', detail: '「検索するテキスト」で検索する文字列。' },
+            withinText: { name: '検索するテキスト', detail: '「検索文字列」を検索する最初のテキスト。' },
+            startNum: { name: '開始位置', detail: '「検索するテキスト」内の検索を開始する文字位置。省略した場合は、値 1 が想定されます。' },
+        },
+    },
+    SUBSTITUTE: {
+        description: '文字列中の指定された文字を他の文字に置き換えます。',
+        abstract: '文字列中の指定された文字を他の文字に置き換えます。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/substitute-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '文字を置き換えるテキストを含むセルへのテキストまたは参照。' },
+            oldText: { name: '検索文字列', detail: '置換する文字列を指定します。' },
+            newText: { name: '置換文字列', detail: '検索文字列を検索して置き換える文字列を指定します。' },
+            instanceNum: { name: '置換対象を指定', detail: '検索文字列に含まれるどの文字列を置換文字列と置き換えるかを指定します。 置換対象を指定した場合、検索文字列中の置換対象文字列だけが置き換えられます。 指定しない場合、検索文字列中のすべての文字列が置換文字列に置き換えられます。' },
+        },
+    },
+    T: {
+        description: '引数を文字列に変換します。',
+        abstract: '引数を文字列に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/t-function',
+            },
+        ],
+        functionParameter: {
+            value: { name: '値', detail: 'テストする値を指定します。' },
+        },
+    },
+    TEXT: {
+        description: '数値を書式設定した文字列に変換します。',
+        abstract: '数値を書式設定した文字列に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/text-function',
+            },
+        ],
+        functionParameter: {
+            value: { name: '値', detail: 'テキストに変換する数値。' },
+            formatText: { name: '数値形式', detail: '指定された値に適用する書式を定義するテキスト文字列。' },
+        },
+    },
+    TEXTAFTER: {
+        description: '指定された文字または文字列の後に発生するテキストを返します',
+        abstract: '指定された文字または文字列の後に発生するテキストを返します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/textafter-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字', detail: '検索対象のテキスト。ワイルドカード文字は使用できません。' },
+            delimiter: { name: 'デリミタ', detail: '抽出した後のポイントをマークするテキスト。' },
+            instanceNum: { name: 'インスタンス番号', detail: 'テキストを抽出する区切り記号のインスタンス。' },
+            matchMode: { name: 'マッチモード', detail: 'テキスト検索で大文字と小文字を区別するかどうかを指定します。既定では大文字と小文字が区別されます。' },
+            matchEnd: { name: 'マッチ終了', detail: 'テキストの末尾を区切り記号として扱います。既定では、テキストは完全一致です。' },
+            ifNotFound: { name: '比類のない価値', detail: '一致するものが見つからない場合に返される値。既定では、#N/A が返されます。' },
+        },
+    },
+    TEXTBEFORE: {
+        description: '指定された文字または文字列の前に発生するテキストを返します',
+        abstract: '指定された文字または文字列の前に発生するテキストを返します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/textbefore-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字', detail: '検索対象のテキスト。ワイルドカード文字は使用できません。' },
+            delimiter: { name: 'デリミタ', detail: '抽出した後のポイントをマークするテキスト。' },
+            instanceNum: { name: 'インスタンス番号', detail: 'テキストを抽出する区切り記号のインスタンス。' },
+            matchMode: { name: 'マッチモード', detail: 'テキスト検索で大文字と小文字を区別するかどうかを指定します。既定では大文字と小文字が区別されます。' },
+            matchEnd: { name: 'マッチ終了', detail: 'テキストの末尾を区切り記号として扱います。既定では、テキストは完全一致です。' },
+            ifNotFound: { name: '比類のない価値', detail: '一致するものが見つからない場合に返される値。既定では、#N/A が返されます。' },
+        },
+    },
+    TEXTJOIN: {
+        description: 'テキスト：複数の範囲または文字列のテキストを結合します',
+        abstract: 'テキスト：複数の範囲または文字列のテキストを結合します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/textjoin-function',
+            },
+        ],
+        functionParameter: {
+            delimiter: { name: '区切り記号', detail: '空のテキスト文字列、または二重引用符で囲まれた 1 つ以上の文字、または有効なテキスト文字列への参照。' },
+            ignoreEmpty: { name: '空のセルは無視', detail: 'TRUE の場合、空のセルは無視されます。' },
+            text1: { name: '文字列1', detail: '結合するテキスト項目。 文字列またはセルの範囲などの文字列の配列。' },
+            text2: { name: '文字列2', detail: '結合する追加のテキスト項目。 テキスト項目には、text1 を含め、最大 252 のテキスト引数を設定できます。 各引数には、文字列、またはセルの範囲などの文字列の配列を指定できます。' },
+        },
+    },
+    TEXTSPLIT: {
+        description: '列区切り記号と行区切り記号を使用してテキスト文字列を分割します',
+        abstract: '列区切り記号と行区切り記号を使用してテキスト文字列を分割します',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/textsplit-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字', detail: '分割するテキスト。' },
+            colDelimiter: { name: '列デリミタ', detail: '列を分割する文字または文字列。' },
+            rowDelimiter: { name: '行デリミタ', detail: '行を分割する文字または文字列。' },
+            ignoreEmpty: { name: '空のセルを無視する', detail: '空のセルを無視するかどうか。デフォルトはFALSEです。' },
+            matchMode: { name: 'マッチモード', detail: 'テキスト内の区切り文字の一致を検索します。デフォルトでは、大文字と小文字が区別された照合が行われます。' },
+            padWith: { name: '塗りつぶし値', detail: 'パディングに使用する値。デフォルトでは、#N/A が使用されます。' },
+        },
+    },
+    TRIM: {
+        description: '各単語間のスペースは 1 つ残し、不要なスペースをすべて削除します。',
+        abstract: '文字列から余分なスペースを削除します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/trim-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '余分なスペースを削除するテキストを指定します。' },
+        },
+    },
+    UNICHAR: {
+        description: '指定された数値により参照される Unicode 文字を返します。',
+        abstract: '指定された数値により参照される Unicode 文字を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/unichar-function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '文字に対応する Unicode 番号を指定します。' },
+        },
+    },
+    UNICODE: {
+        description: '文字列の最初の文字に対応する番号 (コード ポイント) を返します。',
+        abstract: '文字列の最初の文字に対応する番号 (コード ポイント) を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/unicode-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: 'Unicode 値を求める文字を指定します。' },
+        },
+    },
+    UPPER: {
+        description: '文字列に含まれる英字をすべて大文字に変換します。',
+        abstract: '文字列に含まれる英字をすべて大文字に変換します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/upper-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '大文字に変換する文字列を指定します。' },
+        },
+    },
+    VALUE: {
+        description: '文字列を数値に変換して返します。',
+        abstract: '文字列を数値に変換して返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/value-function',
+            },
+        ],
+        functionParameter: {
+            text: { name: '文字列', detail: '文字列を半角の二重引用符 (") で囲んで指定するか、または変換する文字列を含むセル参照を指定します。' },
+        },
+    },
+    VALUETOTEXT: {
+        description: '指定した値からテキストを返します。',
+        abstract: '指定した値からテキストを返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/valuetotext-function',
+            },
+        ],
+        functionParameter: {
+            value: { name: '値', detail: '文字列として返す値。' },
+            format: { name: '書式', detail: '返されるデータの形式。次の 2 つの値のいずれかを指定できます。\n0 既定。 読みやすい簡潔な形式。 \n1 エスケープ文字と行の区切り文字を含む厳格なフォーマット。 数式バーに入力したときに解析できる文字列を生成します。 返された文字列は、ブーリアン、数値、エラーを除き、引用符でカプセル化されます。' },
+        },
+    },
+    CALL: {
+        description: 'ダイナミック リンク ライブラリまたはコード リソースで、プロシージャを呼び出します。',
+        abstract: 'ダイナミック リンク ライブラリまたはコード リソースで、プロシージャを呼び出します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/call-function',
+            },
+        ],
+        functionParameter: {
+            moduleText: { name: 'モジュール文字列', detail: 'プロシージャを含むダイナミック リンク ライブラリ (DLL) の名前です。' },
+            procedure: { name: 'プロシージャ', detail: 'DLL 内のプロシージャ名または序数です。' },
+            typeText: { name: '型文字列', detail: '引数と戻り値のデータ型を指定する文字列です。' },
+            argument1: { name: '引数 1', detail: '省略可能。プロシージャに渡す最初の引数です。' },
+        },
+    },
+    EUROCONVERT: {
+        description: '数値からユーロ通貨への換算、ユーロ通貨からユーロ通貨使用国の現地通貨への換算、またはユーロ通貨を基にしてユーロ通貨を使用する参加国間の通貨の換算を行います。',
+        abstract: '数値からユーロ通貨への換算、ユーロ通貨からユーロ通貨使用国の現地通貨への換算、またはユーロ通貨を基にしてユーロ通貨を使用する参加国間の通貨の換算を行います。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/euroconvert-function',
+            },
+        ],
+        functionParameter: {
+            number: { name: '数値', detail: '換算する通貨の値です。' },
+            source: { name: '換算元', detail: '換算元通貨のコードです。' },
+            target: { name: '換算先', detail: '換算先通貨のコードです。' },
+            fullPrecision: { name: '完全精度', detail: '通貨固有の丸め規則を使用するかどうかを指定する論理値です。' },
+            triangulationPrecision: { name: '三角換算精度', detail: '省略可能。ユーロを介した中間換算の有効桁数です。' },
+        },
+    },
+    REGISTER_ID: {
+        description: 'あらかじめ登録されている、指定のダイナミック リンク ライブラリ (DLL) またはコード リソースのレジスタ ID を返します。',
+        abstract: 'あらかじめ登録されている、指定のダイナミック リンク ライブラリ (DLL) またはコード リソースのレジスタ ID を返します。',
+        links: [
+            {
+                title: '指導',
+                url: 'https://support.microsoft.com/ja-jp/excel/functions/register-id-function',
+            },
+        ],
+        functionParameter: {
+            moduleText: { name: 'モジュール文字列', detail: 'プロシージャを含む DLL またはコード リソースの名前です。' },
+            procedure: { name: 'プロシージャ', detail: 'プロシージャ名または序数です。' },
+            typeText: { name: '型文字列', detail: '省略可能。引数と戻り値のデータ型を指定する文字列です。' },
+        },
+    },
+};
+
+export default locale;

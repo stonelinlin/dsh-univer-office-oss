@@ -1,0 +1,1149 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { DocumentDataModel, ICustomRange, IParagraph, ITextRangeParam, Nullable } from '@univerjs/core';
+import type {
+    Documents,
+    DocumentSkeleton,
+    IBoundRectNoAngle,
+    IDocsTableRenderViewport,
+    IDocumentSkeletonGlyph,
+    IDocumentSkeletonLineContext,
+    IDocumentSkeletonPage,
+    IDocumentSkeletonSection,
+    IRenderContext,
+    IRenderModule,
+} from '@univerjs/engine-render';
+import { Disposable, fromEventSubject, Inject, PresetListType } from '@univerjs/core';
+import { DocSkeletonManagerService } from '@univerjs/docs';
+import { CURSOR_TYPE, documentSkeletonLineIterator, documentSkeletonTableIterator, getDocsTableRenderViewport, getTableIdAndSliceIndex, TRANSFORM_CHANGE_OBSERVABLE_TYPE } from '@univerjs/engine-render';
+import { BehaviorSubject, distinctUntilChanged, filter, map, Subject, switchMap, take, tap, throttleTime } from 'rxjs';
+import { DOC_VERTICAL_PADDING } from '../types/const/padding';
+import { transformOffset2Bound } from './doc-popup-manager.service';
+import { NodePositionConvertToCursor } from './selection/convert-text-range';
+import { getLineBounding } from './selection/text-range';
+
+export interface ICustomRangeBound {
+    customRange: ICustomRange;
+    rects: IBoundRectNoAngle[];
+    segmentId?: string;
+    segmentPageIndex: number;
+}
+
+export interface IBulletBound {
+    rect: IBoundRectNoAngle;
+    segmentId?: string;
+    segmentPageIndex: number;
+    paragraph: IParagraph;
+}
+
+const calcDocRangePositions = (range: ITextRangeParam, documents: Documents, skeleton: DocumentSkeleton, pageIndex: number): IBoundRectNoAngle[] | undefined => {
+    const startPosition = skeleton.findNodePositionByCharIndex(range.startOffset, true, range.segmentId, pageIndex);
+    const skeletonData = skeleton.getSkeletonData();
+    let end = range.collapsed ? range.startOffset : range.endOffset - 1;
+    if (range.segmentId) {
+        const root = Array.from(skeletonData?.skeFooters.get(range.segmentId)?.values() ?? [])[0] ?? Array.from(skeletonData?.skeHeaders.get(range.segmentId)?.values() ?? [])[0];
+        if (root) {
+            end = Math.min(root.ed, end);
+        }
+    }
+    const endPosition = skeleton.findNodePositionByCharIndex(end, true, range.segmentId, pageIndex);
+    if (!endPosition || !startPosition) {
+        return;
+    }
+
+    const documentOffsetConfig = documents.getOffsetConfig();
+    const convertor = new NodePositionConvertToCursor(documentOffsetConfig, skeleton);
+    const { borderBoxPointGroup } = convertor.getRangePointData(startPosition, endPosition);
+    const bounds = getLineBounding(borderBoxPointGroup);
+
+    return bounds.map((rect) => ({
+        top: rect.top + documentOffsetConfig.docsTop - DOC_VERTICAL_PADDING,
+        bottom: rect.bottom + documentOffsetConfig.docsTop + DOC_VERTICAL_PADDING,
+        left: rect.left + documentOffsetConfig.docsLeft,
+        right: rect.right + documentOffsetConfig.docsLeft,
+    }));
+};
+
+interface ICustomRangeBoundBase {
+    paragraphStart: number;
+    paragraphEnd: number;
+    startIndex: number;
+    rect: IBoundRectNoAngle;
+    fisrtLine: IBoundRectNoAngle;
+}
+
+const calcDocParagraphPositions = (sections: IDocumentSkeletonSection[], top: number, left: number, pageWidth: number): ICustomRangeBoundBase[] => {
+    const paragraphBounds: ICustomRangeBoundBase[] = [];
+    for (const section of sections) {
+        const sectionTop = section.top;
+        for (const column of section.columns) {
+            const columnLeft = column.left;
+            const width = section.colCount === 1 ? pageWidth : column.width;
+            let currentParagraph: ICustomRangeBoundBase | null = null;
+            for (const line of column.lines) {
+                const startIndex = line.paragraphIndex;
+                if (line.paragraphStart) {
+                    if (currentParagraph) {
+                        paragraphBounds.push(currentParagraph);
+                        currentParagraph = null;
+                    }
+                    const lineRect = {
+                        top: top + sectionTop + line.top,
+                        left: left + columnLeft,
+                        right: left + columnLeft + width,
+                        bottom: top + sectionTop + line.top + line.lineHeight,
+                    };
+                    currentParagraph = {
+                        paragraphStart: line.st,
+                        paragraphEnd: startIndex,
+                        startIndex,
+                        rect: lineRect,
+                        fisrtLine: {
+                            top: top + sectionTop + line.top + line.marginTop + line.paddingTop,
+                            left: left + columnLeft,
+                            right: left + columnLeft + width,
+                            bottom: top + sectionTop + line.top + line.marginTop + line.paddingTop + line.contentHeight,
+                        },
+                    };
+                } else {
+                    if (currentParagraph && currentParagraph.startIndex === startIndex) {
+                        currentParagraph.rect.bottom = top + sectionTop + line.top + line.lineHeight;
+                    }
+                }
+            }
+
+            if (currentParagraph) {
+                paragraphBounds.push(currentParagraph);
+            }
+        }
+    }
+
+    return paragraphBounds;
+};
+
+const calcParagraphPositionsFromLineContexts = (
+    contexts: IDocumentSkeletonLineContext[],
+    docsLeft: number,
+    docsTop: number
+): ICustomRangeBoundBase[] => {
+    const paragraphBounds: ICustomRangeBoundBase[] = [];
+    const currentParagraphs = new Map<string, ICustomRangeBoundBase>();
+
+    for (const context of contexts) {
+        const { column, line, lineWidth, pageLeft, sectionTop } = context;
+        const startIndex = line.paragraphIndex;
+        const columnLeft = pageLeft + column.left + docsLeft;
+        const lineTop = sectionTop + line.top + docsTop;
+        const lineBottom = getParagraphLineBottom(context, lineTop);
+        const key = `${context.source}:${context.pageIndex}:${pageLeft}:${column.left}:${startIndex}`;
+
+        if (line.paragraphStart) {
+            const currentParagraph = currentParagraphs.get(key);
+            if (currentParagraph) {
+                paragraphBounds.push(currentParagraph);
+            }
+
+            currentParagraphs.set(key, {
+                paragraphStart: line.st,
+                paragraphEnd: startIndex,
+                startIndex,
+                rect: {
+                    top: lineTop,
+                    left: columnLeft,
+                    right: columnLeft + lineWidth,
+                    bottom: lineBottom,
+                },
+                fisrtLine: {
+                    top: lineTop + line.marginTop + line.paddingTop,
+                    left: columnLeft,
+                    right: columnLeft + lineWidth,
+                    bottom: lineTop + line.marginTop + line.paddingTop + line.contentHeight,
+                },
+            });
+        } else {
+            const currentParagraph = currentParagraphs.get(key);
+            if (currentParagraph) {
+                currentParagraph.rect.bottom = lineBottom;
+            }
+        }
+    }
+
+    paragraphBounds.push(...currentParagraphs.values());
+
+    return paragraphBounds;
+};
+
+function getParagraphLineBottom(context: IDocumentSkeletonLineContext, lineTop: number): number {
+    const lineBottom = lineTop + context.line.lineHeight;
+    if (context.source !== 'column' || context.line !== context.column.lines[context.column.lines.length - 1] || !Number.isFinite(context.page.pageHeight)) {
+        return lineBottom;
+    }
+
+    const pageTop = lineTop - context.line.top - context.section.top;
+    return Math.max(lineBottom, pageTop + context.page.pageHeight);
+}
+
+export const calcDocGlyphPosition = (glyph: IDocumentSkeletonGlyph, documents: Documents, skeleton: DocumentSkeleton, pageIndex = -1): IBoundRectNoAngle | undefined => {
+    const start = skeleton.findPositionByGlyph(glyph, pageIndex);
+    if (!start) {
+        return;
+    }
+
+    const documentOffsetConfig = documents.getOffsetConfig();
+    const startPosition = { ...start, isBack: true };
+    const convertor = new NodePositionConvertToCursor(documentOffsetConfig, skeleton);
+    const { borderBoxPointGroup } = convertor.getRangePointData(startPosition, startPosition);
+    const bounds = getLineBounding(borderBoxPointGroup);
+    const rect = bounds[0];
+    if (!rect) {
+        return;
+    }
+
+    return {
+        top: rect.top + documentOffsetConfig.docsTop,
+        bottom: rect.bottom + documentOffsetConfig.docsTop,
+        left: rect.left + documentOffsetConfig.docsLeft,
+        right: rect.left + documentOffsetConfig.docsLeft + glyph.width,
+    };
+};
+
+const LIST_MARKER_FALLBACK_HIT_WIDTH = 36;
+
+export function getListMarkerFallbackHit(
+    paragraphBound: Pick<IMutiPageParagraphBound, 'firstLine' | 'pageIndex' | 'rect' | 'segmentId'>,
+    paragraph: Pick<IParagraph, 'bullet' | 'startIndex'> | undefined,
+    point: { x: number; y: number }
+): IBulletBound | null {
+    const markerBound = getListMarkerFallbackBound(paragraphBound, paragraph);
+
+    if (!markerBound || !isPointInRect(point.x, point.y, markerBound.rect)) {
+        return null;
+    }
+
+    return markerBound;
+}
+
+export function getListParagraphContextMenuHit(
+    paragraphBound: Pick<IMutiPageParagraphBound, 'firstLine' | 'pageIndex' | 'rect' | 'segmentId'>,
+    paragraph: Pick<IParagraph, 'bullet' | 'startIndex'> | undefined,
+    point: { x: number; y: number }
+): IBulletBound | null {
+    return getListMarkerFallbackHit(paragraphBound, paragraph, point);
+}
+
+export function isChecklistListType(listType?: string): boolean {
+    return listType === PresetListType.CHECK_LIST || listType === PresetListType.CHECK_LIST_CHECKED;
+}
+
+export function getListMarkerFallbackBound(
+    paragraphBound: Pick<IMutiPageParagraphBound, 'firstLine' | 'pageIndex' | 'rect' | 'segmentId'>,
+    paragraph: Pick<IParagraph, 'bullet' | 'startIndex'> | undefined
+): IBulletBound | null {
+    if (!paragraph?.bullet) {
+        return null;
+    }
+
+    return {
+        paragraph: paragraph as IParagraph,
+        rect: {
+            bottom: paragraphBound.firstLine.bottom,
+            left: paragraphBound.rect.left,
+            right: Math.min(paragraphBound.rect.right, paragraphBound.rect.left + LIST_MARKER_FALLBACK_HIT_WIDTH),
+            top: paragraphBound.firstLine.top,
+        },
+        segmentId: paragraphBound.segmentId,
+        segmentPageIndex: paragraphBound.pageIndex,
+    };
+}
+
+interface ICustomRangeActive {
+    range: ICustomRange;
+    segmentId?: string;
+    segmentPageIndex: number;
+    rects: IBoundRectNoAngle[];
+}
+
+interface ICustomRangeClickEvent extends ICustomRangeActive {
+    ctrlKey: boolean;
+    metaKey: boolean;
+}
+
+interface IBulletActive {
+    paragraph: IParagraph;
+    segmentId?: string;
+    segmentPageIndex: number;
+    rect: IBoundRectNoAngle;
+}
+
+export interface IMutiPageParagraphBound {
+    rect: IBoundRectNoAngle;
+    paragraphStart: number;
+    paragraphEnd: number;
+    startIndex: number;
+    rects: IBoundRectNoAngle[];
+    pageIndex: number;
+    segmentId?: string;
+    firstLine: IBoundRectNoAngle;
+}
+
+export interface ITableParagraphBound {
+    rect: IBoundRectNoAngle;
+    paragraphStart: number;
+    paragraphEnd: number;
+    startIndex: number;
+    pageIndex: number;
+    segmentId?: string;
+    rowIndex: number;
+    colIndex: number;
+    firstLine: IBoundRectNoAngle;
+    tableId: string;
+}
+
+export interface ITableBound {
+    rect: IBoundRectNoAngle;
+    pageIndex: number;
+    tableId: string;
+}
+
+export interface ITableCellBound {
+    rect: IBoundRectNoAngle;
+    pageIndex: number;
+    rowIndex: number;
+    colIndex: number;
+    tableId: string;
+}
+
+const TABLE_BLOCK_MENU_HOVER_GUTTER_LEFT = 72;
+const TABLE_BLOCK_MENU_HOVER_GUTTER_TOP = 42;
+
+function isPointInRect(x: number, y: number, rect: IBoundRectNoAngle) {
+    const { left, right, top, bottom } = rect;
+    if (x >= left && x <= right && y >= top && y <= bottom) {
+        return true;
+    }
+    return false;
+}
+
+function getRectArea(rect: IBoundRectNoAngle) {
+    return Math.max(0, rect.right - rect.left) * Math.max(0, rect.bottom - rect.top);
+}
+
+function isRectContainingRect(outer: IBoundRectNoAngle, inner: IBoundRectNoAngle) {
+    return outer.left <= inner.left &&
+        outer.right >= inner.right &&
+        outer.top <= inner.top &&
+        outer.bottom >= inner.bottom;
+}
+
+function getParagraphTextRangeLength(bound: Pick<IMutiPageParagraphBound, 'paragraphEnd' | 'paragraphStart'>) {
+    return Math.max(0, bound.paragraphEnd - bound.paragraphStart);
+}
+
+function getMostSpecificParagraphBound(bounds: IMutiPageParagraphBound[]) {
+    return bounds.sort((left, right) =>
+        getRectArea(left.rect) - getRectArea(right.rect) ||
+        getParagraphTextRangeLength(left) - getParagraphTextRangeLength(right)
+    )[0];
+}
+
+function removeContainerParagraphBounds<T extends Pick<IMutiPageParagraphBound, 'rect'>>(bounds: T[]) {
+    return bounds.filter((bound) => !bounds.some((other) => (
+        other !== bound &&
+        getRectArea(other.rect) < getRectArea(bound.rect) &&
+        isRectContainingRect(bound.rect, other.rect)
+    )));
+}
+
+export function getTableBlockMenuHoverRect(tableRect: IBoundRectNoAngle): IBoundRectNoAngle {
+    return {
+        bottom: tableRect.bottom,
+        left: tableRect.left - TABLE_BLOCK_MENU_HOVER_GUTTER_LEFT,
+        right: tableRect.right,
+        top: tableRect.top - TABLE_BLOCK_MENU_HOVER_GUTTER_TOP,
+    };
+}
+
+export function getTableHorizontalViewportGeometry(tableLeft: number, tableWidth: number, viewport: Nullable<IDocsTableRenderViewport>) {
+    const hasHorizontalViewport = hasHorizontalTableViewport(viewport);
+    const visibleLeft = hasHorizontalViewport
+        ? tableLeft - (viewport.leadingInsetLeft ?? 0)
+        : tableLeft;
+
+    return {
+        scrollLeft: hasHorizontalViewport ? viewport.scrollLeft : 0,
+        visibleLeft,
+        visibleRight: visibleLeft + (hasHorizontalViewport ? viewport.viewportWidth : tableWidth),
+    };
+}
+
+function hasHorizontalTableViewport(viewport: Nullable<IDocsTableRenderViewport>): viewport is IDocsTableRenderViewport {
+    return viewport != null &&
+        (viewport.leadingInsetLeft ?? 0) + viewport.contentWidth + (viewport.trailingInsetRight ?? 0) > viewport.viewportWidth;
+}
+
+export class DocEventManagerService extends Disposable implements IRenderModule {
+    private readonly _hoverCustomRanges$ = new BehaviorSubject<ICustomRangeActive[]>([]);
+    readonly hoverCustomRanges$ = this._hoverCustomRanges$.pipe(distinctUntilChanged((pre, aft) => pre.length === aft.length && pre.every((item, i) => aft[i].range.rangeId === item.range.rangeId && aft[i].segmentId === item.segmentId && aft[i].segmentPageIndex === item.segmentPageIndex && aft[i].range.startIndex === item.range.startIndex)));
+
+    private readonly _clickCustomRanges$ = new Subject<ICustomRangeClickEvent>();
+    readonly clickCustomRanges$ = this._clickCustomRanges$.asObservable();
+
+    private readonly _pointerDownCustomRanges$ = new Subject<ICustomRangeActive[]>();
+    readonly pointerDownCustomRanges$ = this._pointerDownCustomRanges$.asObservable();
+
+    private readonly _hoverBullet$ = new Subject<Nullable<IBulletActive>>();
+    readonly hoverBullet$ = this._hoverBullet$.pipe(distinctUntilChanged((pre, aft) => pre?.paragraph.startIndex === aft?.paragraph.startIndex && pre?.segmentId === aft?.segmentId && pre?.segmentPageIndex === aft?.segmentPageIndex));
+
+    private readonly _clickBullet$ = new Subject<IBulletActive>();
+    readonly clickBullets$ = this._clickBullet$.asObservable();
+
+    private readonly _contextMenuBullet$ = new Subject<IBulletActive & { x: number; y: number }>();
+    readonly contextMenuBullets$ = this._contextMenuBullet$.asObservable();
+
+    private readonly _hoverParagraph$ = new BehaviorSubject<Nullable<IMutiPageParagraphBound>>(null);
+    readonly hoverParagraph$ = this._hoverParagraph$.pipe(distinctUntilChanged((pre, aft) => pre?.startIndex === aft?.startIndex && pre?.segmentId === aft?.segmentId && pre?.pageIndex === aft?.pageIndex));
+    readonly hoverParagraphRealTime$ = this._hoverParagraph$.asObservable();
+
+    get hoverParagraph() {
+        return this._hoverParagraph$.value;
+    }
+
+    private readonly _hoverParagraphLeft$ = new BehaviorSubject<Nullable<IMutiPageParagraphBound>>(null);
+    readonly hoverParagraphLeft$ = this._hoverParagraphLeft$.pipe(distinctUntilChanged((pre, aft) => pre?.startIndex === aft?.startIndex && pre?.segmentId === aft?.segmentId && pre?.pageIndex === aft?.pageIndex));
+    readonly hoverParagraphLeftRealTime$ = this._hoverParagraphLeft$.asObservable();
+
+    get hoverParagraphLeft() {
+        return this._hoverParagraphLeft$.value;
+    }
+
+    private readonly _hoverTableCell$ = new Subject<Nullable<ITableCellBound>>();
+    readonly hoverTableCell$ = this._hoverTableCell$.pipe(distinctUntilChanged((pre, aft) => pre?.rowIndex === aft?.rowIndex && pre?.colIndex === aft?.colIndex && pre?.tableId === aft?.tableId && pre?.pageIndex === aft?.pageIndex));
+    readonly hoverTableCellRealTime$ = this._hoverTableCell$.asObservable();
+
+    private readonly _hoverTable$ = new Subject<Nullable<ITableBound>>();
+    readonly hoverTable$ = this._hoverTable$.pipe(distinctUntilChanged((pre, aft) => pre?.tableId === aft?.tableId && pre?.pageIndex === aft?.pageIndex));
+    readonly hoverTableRealTime$ = this._hoverTable$.asObservable();
+
+    private _customRangeDirty = true;
+    private _bulletDirty = true;
+    private _paragraphDirty = true;
+
+    /**
+     * cache the bounding of custom ranges,
+     * it will be updated when the doc-skeleton is recalculated
+     */
+    private _customRangeBounds: ICustomRangeBound[] = [];
+    /**
+     * cache the bounding of bullets,
+     * it will be updated when the doc-skeleton is recalculated
+     */
+    private _bulletBounds: IBulletBound[] = [];
+    /**
+     * cache the bounding of paragraphs,
+     * it will be updated when the doc-skeleton is recalculated
+     */
+    private _paragraphBounds: Map<number, IMutiPageParagraphBound> = new Map();
+    private _paragraphLeftBounds: IMutiPageParagraphBound[] = [];
+    private _tableParagraphBounds: Map<string, ITableParagraphBound[]> = new Map();
+    private _segmentParagraphBounds: Map<string, Map<number, IMutiPageParagraphBound[]>> = new Map();
+    private _tableViewportSignature = '';
+
+    private _tableCellBounds: Map<string, ITableCellBound[]> = new Map();
+    private _tableBounds: Map<string, ITableBound> = new Map();
+
+    private get _skeleton() {
+        return this._docSkeletonManagerService.getSkeleton();
+    }
+
+    private get _documents() {
+        return this._context.mainComponent as Documents;
+    }
+
+    constructor(
+        private _context: IRenderContext<DocumentDataModel>,
+        @Inject(DocSkeletonManagerService) private readonly _docSkeletonManagerService: DocSkeletonManagerService
+    ) {
+        super();
+
+        this._initResetDirty();
+        this._initEvents();
+        this._initPointer();
+    }
+
+    override dispose() {
+        this._hoverCustomRanges$.complete();
+        this._clickCustomRanges$.complete();
+        this._pointerDownCustomRanges$.complete();
+        super.dispose();
+    }
+
+    private _initPointer() {
+        let preCursor = CURSOR_TYPE.TEXT;
+        this.disposeWithMe(this.hoverCustomRanges$.subscribe((ranges) => {
+            if (ranges.length) {
+                preCursor = this._context.scene.getCursor();
+                this._context.scene.setCursor(CURSOR_TYPE.POINTER);
+            } else {
+                this._context.scene.setCursor(preCursor);
+            }
+        }));
+    }
+
+    private _initResetDirty() {
+        this.disposeWithMe(this._skeleton.dirty$.subscribe(() => {
+            this._customRangeDirty = true;
+            this._bulletDirty = true;
+            this._paragraphDirty = true;
+        }));
+
+        this.disposeWithMe(
+            fromEventSubject(this._context.engine.onTransformChange$).pipe(
+                filter((evt) => evt.type === TRANSFORM_CHANGE_OBSERVABLE_TYPE.resize)
+            ).subscribe(() => {
+                this._customRangeDirty = true;
+                this._bulletDirty = true;
+                this._paragraphDirty = true;
+            })
+        );
+
+        this.disposeWithMe(
+            fromEventSubject(this._context.scene.onTransformChange$).pipe(
+                filter((evt) => evt.type === TRANSFORM_CHANGE_OBSERVABLE_TYPE.scale)
+            ).subscribe(() => {
+                this._customRangeDirty = true;
+                this._bulletDirty = true;
+                this._paragraphDirty = true;
+            })
+        );
+    }
+
+    private _initEvents() {
+        this.disposeWithMe(fromEventSubject(this._context.scene.onPointerMove$).pipe(throttleTime(30, undefined, { leading: true, trailing: true })).subscribe((evt) => {
+            if (evt.buttons > 0) {
+                this._hoverBullet$.next(null);
+                this._hoverCustomRanges$.next([]);
+                this._hoverParagraph$.next(null);
+                this._hoverParagraphLeft$.next(null);
+                this._hoverTableCell$.next(null);
+                this._hoverTable$.next(null);
+
+                return;
+            }
+
+            const { x, y } = transformOffset2Bound(evt.offsetX, evt.offsetY, this._context.scene);
+            this._hoverCustomRanges$.next(
+                this._calcActiveRanges({ x, y })
+            );
+            this._hoverParagraph$.next(
+                this._calcActiveParagraph({ x, y })
+            );
+            this._hoverParagraphLeft$.next(
+                this._calcActiveParagraphLeft({ x, y })
+            );
+            this._hoverBullet$.next(
+                this._calcActiveBullet({ x, y })
+            );
+        }));
+        this.disposeWithMe(this._context.scene.onPointerEnter$.subscribeEvent(() => {
+            this._hoverBullet$.next(null);
+            this._hoverCustomRanges$.next([]);
+        }));
+
+        const onPointerDown$ = fromEventSubject(this._context.mainComponent!.onPointerDown$);
+        const onPointerUp$ = fromEventSubject(this._context.scene!.onPointerUp$);
+        this.disposeWithMe(onPointerDown$.pipe(
+            tap((down) => {
+                if (down.button !== 0) {
+                    return;
+                }
+
+                const point = transformOffset2Bound(down.offsetX, down.offsetY, this._context.scene);
+                this._pointerDownCustomRanges$.next(this._calcActiveRanges(point));
+            }),
+            switchMap((down) => onPointerUp$.pipe(take(1), map((up) => ({ down, up })))),
+            filter(({ down, up }) => down.target === up.target && (down.button === 2 || up.timeStamp - down.timeStamp < 300))
+        ).subscribe(({ down }) => {
+            const point = transformOffset2Bound(down.offsetX, down.offsetY, this._context.scene);
+
+            if (down.button === 2) {
+                const bullet = this._calcActiveBullet(point) ?? this._calcActiveListParagraph(point);
+                if (bullet) {
+                    this._contextMenuBullet$.next({
+                        ...bullet,
+                        x: down.offsetX,
+                        y: down.offsetY,
+                    });
+                }
+
+                return;
+            }
+
+            const ranges = this._calcActiveRanges(point);
+            if (ranges.length) {
+                this._clickCustomRanges$.next({
+                    ...ranges.pop()!,
+                    ctrlKey: !!down.ctrlKey,
+                    metaKey: !!down.metaKey,
+                });
+            }
+
+            const bullet = this._calcActiveBullet(point);
+            if (bullet) {
+                this._clickBullet$.next(bullet);
+            }
+        }));
+    }
+
+    isPointerOnBullet(offsetX: number, offsetY: number): boolean {
+        return Boolean(this._calcActiveBullet(transformOffset2Bound(offsetX, offsetY, this._context.scene)));
+    }
+
+    isPointerOnNonChecklistBullet(offsetX: number, offsetY: number): boolean {
+        const bullet = this._calcActiveBullet(transformOffset2Bound(offsetX, offsetY, this._context.scene));
+
+        return Boolean(bullet && !isChecklistListType(bullet.paragraph.bullet?.listType));
+    }
+
+    getBulletBounds(): IBulletBound[] {
+        this._buildBulletBounds();
+
+        return [...this._bulletBounds];
+    }
+
+    getListContextMenuBulletByOffset(offsetX: number, offsetY: number): Nullable<IBulletBound> {
+        const point = transformOffset2Bound(offsetX, offsetY, this._context.scene);
+
+        return this._calcActiveBullet(point) ?? this._calcActiveListParagraph(point);
+    }
+
+    private _buildCustomRangeBoundsBySegment(segmentId?: string, segmentPage = -1) {
+        const customRanges = this._context.unit.getSelfOrHeaderFooterModel(segmentId)?.getBody()?.customRanges ?? [];
+        const layouts: ICustomRangeBound[] = [];
+        customRanges.forEach((range) => {
+            const textRange: ITextRangeParam = {
+                startOffset: range.startIndex,
+                endOffset: range.endIndex + 1,
+                collapsed: false,
+                segmentId,
+            };
+
+            const rects = calcDocRangePositions(textRange, this._documents, this._skeleton, segmentPage);
+            if (!rects) {
+                return null;
+            }
+
+            layouts.push({
+                customRange: range,
+                rects,
+                segmentId,
+                segmentPageIndex: segmentPage,
+            });
+        });
+
+        return layouts;
+    }
+
+    private _buildCustomRangeBounds() {
+        if (!this._customRangeDirty) {
+            return;
+        }
+        this._customRangeDirty = false;
+        const customRangeBounds: ICustomRangeBound[] = [];
+
+        customRangeBounds.push(...this._buildCustomRangeBoundsBySegment());
+        this._skeleton.getSkeletonData()?.pages.forEach((page, pageIndex) => {
+            if (page.headerId) {
+                customRangeBounds.push(...this._buildCustomRangeBoundsBySegment(page.headerId, pageIndex));
+            }
+
+            if (page.footerId) {
+                customRangeBounds.push(...this._buildCustomRangeBoundsBySegment(page.footerId, pageIndex));
+            }
+        });
+
+        this._customRangeBounds = customRangeBounds;
+    }
+
+    private _calcActiveRanges(evt: { x: number; y: number }) {
+        this._buildCustomRangeBounds();
+
+        const { x, y } = evt;
+        const matchedRanges = this._customRangeBounds.filter((layout) => {
+            return layout.rects.some((rect) => isPointInRect(x, y, rect));
+        });
+        return matchedRanges.map(
+            (range) => ({
+                segmentId: range.segmentId,
+                range: range.customRange,
+                segmentPageIndex: range.segmentPageIndex,
+                rects: range.rects,
+            })
+        );
+    }
+
+    private _buildBulletBoundsBySegment(segmentId?: string, segmentPage = -1): IBulletBound[] {
+        const body = this._context.unit.getSelfOrHeaderFooterModel(segmentId)?.getBody();
+        const paragraphs = (body?.paragraphs ?? []).filter((p) => p.bullet);
+        const bounds: IBulletBound[] = [];
+        const skeletonData = this._skeleton.getSkeletonData();
+        if (!skeletonData) {
+            return bounds;
+        }
+
+        const calc = (pages: IDocumentSkeletonPage[]) => {
+            for (const page of pages) {
+                const sections = [...page.sections];
+                if (page.skeTables) {
+                    const tables = Array.from(page.skeTables.values());
+                    sections.push(...tables.map((i) => i.rows.map((i) => i.cells.map((i) => i.sections))).flat(4));
+                }
+
+                for (const selection of sections) {
+                    for (const column of selection.columns) {
+                        for (const line of column.lines) {
+                            if (line.paragraphStart) {
+                                const paragraph: Nullable<IParagraph> = paragraphs.find((p) => p.startIndex === line.paragraphIndex);
+                                if (paragraph) {
+                                    const targetLine = line;
+                                    const bulletNode = targetLine?.divides?.[0]?.glyphGroup?.[0];
+
+                                    if (!bulletNode) {
+                                        continue;
+                                    }
+
+                                    const rect = calcDocGlyphPosition(bulletNode, this._documents, this._skeleton, segmentPage);
+
+                                    if (!rect) {
+                                        continue;
+                                    }
+
+                                    bounds.push({
+                                        rect,
+                                        segmentId,
+                                        segmentPageIndex: segmentPage,
+                                        paragraph,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return bounds;
+        };
+
+        if (segmentId) {
+            const page = skeletonData.skeFooters.get(segmentId)?.values() ?? skeletonData.skeHeaders.get(segmentId)?.values();
+            if (!page) {
+                return bounds;
+            }
+            return calc(Array.from(page));
+        }
+
+        return calc(skeletonData.pages);
+    }
+
+    private _buildBulletBounds() {
+        if (!this._bulletDirty) {
+            return;
+        }
+        this._bulletDirty = false;
+
+        this._bulletBounds = [];
+        this._bulletBounds.push(...this._buildBulletBoundsBySegment());
+
+        this._skeleton.getSkeletonData()?.pages.forEach((page, pageIndex) => {
+            if (page.headerId) {
+                this._bulletBounds.push(...this._buildBulletBoundsBySegment(page.headerId, pageIndex));
+            }
+
+            if (page.footerId) {
+                this._bulletBounds.push(...this._buildBulletBoundsBySegment(page.footerId, pageIndex));
+            }
+        });
+    }
+
+    private _calcActiveBullet(evt: { x: number; y: number }) {
+        this._buildBulletBounds();
+
+        const { x, y } = evt;
+        const bullet = this._bulletBounds.find((layout) => isPointInRect(x, y, layout.rect));
+        if (bullet) {
+            return bullet;
+        }
+
+        const paragraphBound = this._calcActiveParagraph(evt);
+        if (!paragraphBound) {
+            return null;
+        }
+
+        return getListMarkerFallbackHit(
+            paragraphBound,
+            this._getParagraphByStartIndex(paragraphBound.startIndex, paragraphBound.segmentId),
+            evt
+        );
+    }
+
+    private _calcActiveListParagraph(evt: { x: number; y: number }) {
+        const paragraphBound = this._calcActiveParagraph(evt);
+        if (!paragraphBound) {
+            return null;
+        }
+
+        return getListParagraphContextMenuHit(
+            paragraphBound,
+            this._getParagraphByStartIndex(paragraphBound.startIndex, paragraphBound.segmentId),
+            evt
+        );
+    }
+
+    private _getParagraphByStartIndex(startIndex: number, segmentId?: string): IParagraph | undefined {
+        return this._context.unit.getSelfOrHeaderFooterModel(segmentId)?.getBody()?.paragraphs?.find((paragraph) => paragraph.startIndex === startIndex);
+    }
+
+    // eslint-disable-next-line max-lines-per-function
+    private _buildParagraphBoundsBySegment(segmentId?: string) {
+        const skeletonData = this._skeleton.getSkeletonData();
+        const documents = this._documents;
+        const documentOffsetConfig = documents.getOffsetConfig();
+        if (!skeletonData) {
+            return null;
+        }
+
+        // eslint-disable-next-line max-lines-per-function
+        const calc = (pages: IDocumentSkeletonPage[]) => {
+            const paragraphMap: Map<number, IMutiPageParagraphBound> = new Map();
+
+            const addParagraphBoundsToMap = (
+                map: Map<number, IMutiPageParagraphBound>,
+                bounds: ICustomRangeBoundBase[],
+                pageIndex: number,
+                segmentId?: string
+            ) => {
+                bounds.forEach((bound) => {
+                    if (!map.has(bound.startIndex)) {
+                        map.set(bound.startIndex, {
+                            rect: bound.rect,
+                            paragraphStart: bound.paragraphStart,
+                            paragraphEnd: bound.paragraphEnd,
+                            startIndex: bound.startIndex,
+                            rects: [bound.rect],
+                            pageIndex,
+                            segmentId,
+                            firstLine: bound.fisrtLine,
+                        });
+                    } else {
+                        const current = map.get(bound.startIndex);
+                        if (current) {
+                            current.rect.bottom = bound.rect.bottom;
+                            current.rects.push(bound.rect);
+                        }
+                    }
+                });
+            };
+
+            const lineContextsBySource = new Map<number, IDocumentSkeletonLineContext[]>();
+            documentSkeletonLineIterator(pages, {
+                docsLeft: documentOffsetConfig.docsLeft,
+                pageMarginTop: documentOffsetConfig.pageMarginTop,
+                unitId: this._context.unitId,
+            }, (context) => {
+                if (context.source === 'table-cell') {
+                    return;
+                }
+
+                const lineContexts = lineContextsBySource.get(context.pageIndex) ?? [];
+                lineContexts.push(context);
+                lineContextsBySource.set(context.pageIndex, lineContexts);
+            });
+
+            lineContextsBySource.forEach((contexts, pageIndex) => {
+                addParagraphBoundsToMap(
+                    paragraphMap,
+                    calcParagraphPositionsFromLineContexts(contexts, documentOffsetConfig.docsLeft, documentOffsetConfig.docsTop),
+                    pageIndex,
+                    segmentId
+                );
+            });
+
+            for (const tableContext of documentSkeletonTableIterator(pages, {
+                docsLeft: documentOffsetConfig.docsLeft,
+                docsTop: documentOffsetConfig.docsTop,
+                pageMarginTop: documentOffsetConfig.pageMarginTop,
+                unitId: this._context.unitId,
+            })) {
+                const tableId = tableContext.tableId;
+                const sourceTableId = getTableIdAndSliceIndex(tableId).tableId;
+                const tableViewport = getTableHorizontalViewportGeometry(
+                    tableContext.tableRect.left,
+                    tableContext.table.width,
+                    getDocsTableRenderViewport(this._context.unitId, sourceTableId)
+                );
+                this._tableBounds.set(tableId, {
+                    rect: {
+                        ...tableContext.tableRect,
+                        right: tableViewport.visibleRight,
+                    },
+                    pageIndex: tableContext.pageIndex,
+                    tableId,
+                });
+
+                for (const cellGeometry of tableContext.cells) {
+                    const cell = cellGeometry.cell;
+                    const cellContentWidth = (cell.pageWidth ?? 0) - (cell.marginLeft ?? 0) - (cell.marginRight ?? 0);
+                    const bounds = calcDocParagraphPositions(cell.sections, cellGeometry.pageTop, cellGeometry.pageLeft, cellContentWidth)
+                        .map((bound) => clipParagraphBoundHorizontally(bound, cellGeometry.clipLeft, cellGeometry.clipRight))
+                        .filter((bound): bound is ICustomRangeBoundBase => bound != null);
+                    let arr = this._tableParagraphBounds.get(tableId);
+                    if (!arr) {
+                        arr = [];
+                        this._tableParagraphBounds.set(tableId, arr);
+                    }
+
+                    arr.push(...bounds.map((bound) => ({
+                        rect: bound.rect,
+                        paragraphStart: bound.paragraphStart,
+                        paragraphEnd: bound.paragraphEnd,
+                        startIndex: bound.startIndex,
+                        pageIndex: tableContext.pageIndex,
+                        segmentId,
+                        rowIndex: cellGeometry.rowIndex,
+                        colIndex: cellGeometry.columnIndex,
+                        firstLine: bound.fisrtLine,
+                        tableId,
+                    }))
+                    );
+
+                    let cellBounds = this._tableCellBounds.get(tableId);
+
+                    if (!cellBounds) {
+                        cellBounds = [];
+                        this._tableCellBounds.set(tableId, cellBounds);
+                    }
+
+                    cellBounds.push({
+                        rect: cellGeometry.cellRect,
+                        pageIndex: tableContext.pageIndex,
+                        rowIndex: cellGeometry.rowIndex,
+                        colIndex: cellGeometry.columnIndex,
+                        tableId,
+                    });
+                }
+            }
+
+            return paragraphMap;
+        };
+
+        if (segmentId) {
+            const page = skeletonData.skeFooters.get(segmentId)?.values() ?? skeletonData.skeHeaders.get(segmentId)?.values();
+            if (!page) {
+                return null;
+            }
+            return calc(Array.from(page));
+        }
+
+        return calc(skeletonData.pages);
+    }
+
+    private _buildParagraphBounds() {
+        const tableViewportSignature = this._getTableViewportSignature();
+        if (!this._paragraphDirty && this._tableViewportSignature === tableViewportSignature) {
+            return;
+        }
+        this._paragraphDirty = false;
+        this._tableViewportSignature = tableViewportSignature;
+        this._tableParagraphBounds = new Map();
+        this._tableCellBounds = new Map();
+        this._tableBounds = new Map();
+        this._paragraphBounds = this._buildParagraphBoundsBySegment() ?? new Map();
+        this._paragraphLeftBounds = Array.from(this._paragraphBounds.values()).map((bound) => ({
+            ...bound,
+            rect: {
+                left: bound.rect.left - 60,
+                right: bound.rect.left,
+                top: bound.rect.top,
+                bottom: bound.rect.bottom,
+            },
+        }));
+        const handleSegment = (segmentId: string) => {
+            this._segmentParagraphBounds.set(segmentId, this._buildParagraphBoundsBySegment(segmentId) ?? new Map());
+        };
+
+        this._skeleton.getSkeletonData()?.pages.forEach((page) => {
+            if (page.headerId) {
+                handleSegment(page.headerId);
+            }
+
+            if (page.footerId) {
+                handleSegment(page.footerId);
+            }
+        });
+    }
+
+    private _calcActiveParagraph(evt: { x: number; y: number }): Nullable<IMutiPageParagraphBound> {
+        this._buildParagraphBounds();
+
+        const { x, y } = evt;
+
+        const table = Array.from(this._tableBounds.values()).find((bound) => isPointInRect(x, y, getTableBlockMenuHoverRect(bound.rect)));
+        this._hoverTable$.next(table);
+
+        if (table) {
+            const tableCell = this._tableCellBounds.get(table.tableId)?.find((bound) => isPointInRect(x, y, bound.rect));
+            this._hoverTableCell$.next(tableCell);
+            if (!tableCell) {
+                return null;
+            }
+
+            const paragraphs = this._tableParagraphBounds.get(tableCell.tableId)
+                ?.filter((bound) => bound.colIndex === tableCell.colIndex && bound.rowIndex === tableCell.rowIndex);
+            const paragraph = paragraphs?.find((bound) => isPointInRect(x, y, bound.rect));
+            return paragraph && {
+                ...paragraph,
+                rects: [paragraph.rect],
+            };
+        }
+
+        return getMostSpecificParagraphBound([...this._paragraphBounds.values()].filter((bound) =>
+            bound.rects.some((rect) => isPointInRect(x, y, rect))
+        ));
+    }
+
+    private _calcActiveParagraphLeft(evt: { x: number; y: number }): Nullable<IMutiPageParagraphBound> {
+        this._buildParagraphBounds();
+        const { x, y } = evt;
+
+        return getMostSpecificParagraphBound(this._paragraphLeftBounds.filter((bound) => isPointInRect(x, y, bound.rect)));
+    }
+
+    get paragraphBounds() {
+        this._buildParagraphBounds();
+        return this._paragraphBounds;
+    }
+
+    get tableBounds() {
+        this._buildParagraphBounds();
+        return this._tableBounds;
+    }
+
+    findTableCellBound(tableId: string, rowIndex: number, colIndex: number, pageIndex?: number) {
+        this._buildParagraphBounds();
+        return this._tableCellBounds.get(tableId)?.find((bound) => (
+            bound.rowIndex === rowIndex &&
+            bound.colIndex === colIndex &&
+            (pageIndex == null || bound.pageIndex === pageIndex)
+        ));
+    }
+
+    findParagraphBoundByIndex(index: number) {
+        this._buildParagraphBounds();
+        const tableParagraph = Array.from(this._tableParagraphBounds.values()).flat().find((bound) => bound.startIndex === index);
+        if (tableParagraph) {
+            return tableParagraph;
+        }
+
+        const paragraph = this._paragraphBounds.get(index);
+        if (paragraph) {
+            return paragraph;
+        }
+    }
+
+    findParagraphBoundsInRange(startIndex: number, endIndex: number): IMutiPageParagraphBound[] {
+        this._buildParagraphBounds();
+
+        const bodyBounds = [...this._paragraphBounds.values()];
+        const tableBounds = Array.from(this._tableParagraphBounds.values()).flat().map((bound) => ({
+            rect: bound.rect,
+            paragraphStart: bound.paragraphStart,
+            paragraphEnd: bound.paragraphEnd,
+            startIndex: bound.startIndex,
+            rects: [bound.rect],
+            pageIndex: bound.pageIndex,
+            segmentId: bound.segmentId,
+            firstLine: bound.firstLine,
+        }));
+
+        return getPreferredParagraphBoundsInRange(bodyBounds, tableBounds, startIndex, endIndex);
+    }
+
+    private _getTableViewportSignature(): string {
+        const pages = this._skeleton.getSkeletonData()?.pages ?? [];
+        const signatures: string[] = [];
+
+        for (const tableContext of documentSkeletonTableIterator(pages, {
+            pageMarginTop: this._documents.getOffsetConfig().pageMarginTop,
+            resolveViewport: false,
+            unitId: this._context.unitId,
+        })) {
+            const tableId = getTableIdAndSliceIndex(tableContext.tableId).tableId;
+            const viewport = getDocsTableRenderViewport(this._context.unitId, tableId);
+            if (!viewport) {
+                signatures.push(`${tableId}:none`);
+                continue;
+            }
+
+            signatures.push(`${tableId}:${viewport.contentWidth}:${viewport.viewportWidth}:${viewport.scrollLeft}`);
+        }
+
+        return signatures.join('|');
+    }
+}
+
+export function getPreferredParagraphBoundsInRange(
+    bodyBounds: IMutiPageParagraphBound[],
+    tableBounds: IMutiPageParagraphBound[],
+    startIndex: number,
+    endIndex: number
+): IMutiPageParagraphBound[] {
+    const matchedTableBounds = tableBounds.filter((bound) => isRangeOverlappingParagraph(bound, startIndex, endIndex));
+    if (matchedTableBounds.length) {
+        return matchedTableBounds;
+    }
+
+    return removeContainerParagraphBounds(bodyBounds.filter((bound) => isRangeOverlappingParagraph(bound, startIndex, endIndex)));
+}
+
+function isRangeOverlappingParagraph(bound: Pick<IMutiPageParagraphBound, 'paragraphEnd' | 'paragraphStart'>, startIndex: number, endIndex: number): boolean {
+    return Math.max(bound.paragraphStart, startIndex) <= Math.min(bound.paragraphEnd, endIndex);
+}
+
+function clipParagraphBoundHorizontally(bound: ICustomRangeBoundBase, visibleLeft: number, visibleRight: number): ICustomRangeBoundBase | null {
+    const rect = clipRectHorizontally(bound.rect, visibleLeft, visibleRight);
+    if (!rect) {
+        return null;
+    }
+
+    return {
+        ...bound,
+        rect,
+        fisrtLine: clipRectHorizontally(bound.fisrtLine, visibleLeft, visibleRight) ?? rect,
+    };
+}
+
+function clipRectHorizontally(rect: IBoundRectNoAngle, visibleLeft: number, visibleRight: number): IBoundRectNoAngle | null {
+    const left = Math.max(rect.left, visibleLeft);
+    const right = Math.min(rect.right, visibleRight);
+    if (right <= left) {
+        return null;
+    }
+
+    return {
+        ...rect,
+        left,
+        right,
+    };
+}

@@ -1,0 +1,1121 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ICellData, ICustomRange, IDocumentData, IHyperLinkCustomRange, Injector, IWorkbookData, Nullable } from '@univerjs/core';
+import type { LexerNode } from '../../engine/analysis/lexer-node';
+
+import type { BaseAstNode } from '../../engine/ast-node/base-ast-node';
+import {
+    CellValueType,
+    CustomRangeType,
+    LocaleType,
+
+    RichTextValue,
+} from '@univerjs/core';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { ErrorType } from '../../basics/error-type';
+import { Lexer } from '../../engine/analysis/lexer';
+import { AstTreeBuilder } from '../../engine/analysis/parser';
+import { Interpreter } from '../../engine/interpreter/interpreter';
+import { generateExecuteAstNodeData } from '../../engine/utils/ast-node-tool';
+import { IFormulaCurrentConfigService } from '../../services/current-data.service';
+import { IFunctionService } from '../../services/function.service';
+import { IFormulaRuntimeService } from '../../services/runtime.service';
+import { ISuperTableService } from '../../services/super-table.service';
+import { DateFunction } from '../date/date';
+import { Datevalue } from '../date/datevalue';
+import { Day } from '../date/day';
+import { Edate } from '../date/edate';
+import { FUNCTION_NAMES_DATE } from '../date/function-names';
+import { Month } from '../date/month';
+import { NetworkdaysIntl } from '../date/networkdays-intl';
+import { Today } from '../date/today';
+import { Year } from '../date/year';
+import { FUNCTION_NAMES_LOGICAL } from '../logical/function-names';
+import { If } from '../logical/if';
+import { Iferror } from '../logical/iferror';
+import { Address } from '../lookup/address';
+import { Choose } from '../lookup/choose';
+import { FUNCTION_NAMES_LOOKUP } from '../lookup/function-names';
+import { Hyperlink } from '../lookup/hyperlink';
+import { Index } from '../lookup/index/index';
+import { Match } from '../lookup/match';
+import { Offset } from '../lookup/offset';
+import { Row } from '../lookup/row';
+import { Sort } from '../lookup/sort';
+import { Unique } from '../lookup/unique';
+import { Vlookup } from '../lookup/vlookup';
+import { Xlookup } from '../lookup/xlookup';
+import { Xmatch } from '../lookup/xmatch';
+import { Fact } from '../math/fact';
+import { FUNCTION_NAMES_MATH } from '../math/function-names';
+import { Product } from '../math/product';
+import { Sum } from '../math/sum';
+import { Sumif } from '../math/sumif';
+import { Sumifs } from '../math/sumifs';
+import { Sumproduct } from '../math/sumproduct';
+import { Compare } from '../meta/compare';
+import { Divided } from '../meta/divided';
+import { FUNCTION_NAMES_META } from '../meta/function-names';
+import { Minus } from '../meta/minus';
+import { Multiply } from '../meta/multiply';
+import { Plus } from '../meta/plus';
+import { Countif } from '../statistical/countif';
+import { FUNCTION_NAMES_STATISTICAL } from '../statistical/function-names';
+import { Max } from '../statistical/max';
+import { Median } from '../statistical/median';
+import { Min } from '../statistical/min';
+import { Concatenate } from '../text/concatenate';
+import { FUNCTION_NAMES_TEXT } from '../text/function-names';
+import { Left } from '../text/left';
+import { Len } from '../text/len';
+import { T } from '../text/t';
+import { Text } from '../text/text';
+import { Textjoin } from '../text/textjoin';
+import { getObjectValue } from '../util';
+import { createFunctionTestBed } from './create-function-test-bed';
+
+const getFunctionsTestWorkbookData = (): IWorkbookData => {
+    return {
+        id: 'test',
+        appVersion: '3.0.0-alpha',
+        sheets: {
+            sheet1: {
+                id: 'sheet1',
+                cellData: {
+                    0: {
+                        0: {
+                            v: 'A',
+                            t: 1,
+                        },
+                        1: {
+                            v: 'B',
+                            t: 1,
+                        },
+                        2: {
+                            v: 'C',
+                            t: 1,
+                        },
+                        3: {
+                            v: 'D',
+                            t: 1,
+                        },
+                        4: {
+                            v: '"test"',
+                            t: 1,
+                        },
+                        20: {
+                            v: '',
+                            t: CellValueType.STRING,
+                        },
+                        21: {
+                            v: 0,
+                            t: CellValueType.NUMBER,
+                        },
+                    },
+                    1: {
+                        0: {
+                            v: 44927,
+                            t: 2,
+                        },
+                        1: {
+                            v: 101,
+                            t: 2,
+                        },
+                        2: {
+                            v: 5,
+                            t: 2,
+                        },
+                        3: {
+                            v: 500,
+                            t: 2,
+                        },
+                        20: {
+                            v: '0',
+                            t: CellValueType.NUMBER,
+                        },
+                        21: {
+                            v: 21,
+                            t: CellValueType.NUMBER,
+                        },
+                        22: {
+                            v: 21,
+                            t: CellValueType.NUMBER,
+                        },
+                        23: {
+                            v: '43497',
+                            t: CellValueType.NUMBER,
+                        },
+                        24: {
+                            v: '43497',
+                            t: CellValueType.NUMBER,
+                            f: '=DATE(YEAR(W2),MONTH(W2)+1,1)',
+                        },
+                    },
+                    2: {
+                        0: {
+                            v: 44928,
+                            t: 2,
+                        },
+                        1: {
+                            v: 102,
+                            t: 2,
+                        },
+                        2: {
+                            v: 3,
+                            t: 2,
+                        },
+                        3: {
+                            v: 300,
+                            t: 2,
+                        },
+                    },
+                    3: {
+                        0: {
+                            v: 44929,
+                            t: 2,
+                        },
+                        1: {
+                            v: 103,
+                            t: 2,
+                        },
+                        2: {
+                            v: 2,
+                            t: 2,
+                        },
+                        3: {
+                            v: 200,
+                            t: 2,
+                        },
+                    },
+                    4: {
+                        0: {
+                            v: 44930,
+                            t: 2,
+                        },
+                        1: {
+                            v: 104,
+                            t: 2,
+                        },
+                        2: {
+                            v: 4,
+                            t: 2,
+                        },
+                        3: {
+                            v: 400,
+                            t: 2,
+                        },
+                    },
+                    5: {
+                        0: {
+                            v: 44931,
+                            t: 2,
+                        },
+                        1: {
+                            v: 105,
+                            t: 2,
+                        },
+                        2: {
+                            v: 1,
+                            t: 2,
+                        },
+                        3: {
+                            v: 100,
+                            t: 2,
+                        },
+                    },
+                    6: {
+                        0: {
+                            v: 44932,
+                            t: 2,
+                        },
+                        1: {
+                            v: 101,
+                            t: 2,
+                        },
+                        2: {
+                            v: 3,
+                            t: 2,
+                        },
+                        3: {
+                            v: 300,
+                            t: 2,
+                        },
+                    },
+                    7: {
+                        0: {
+                            v: 44933,
+                            t: 2,
+                        },
+                        1: {
+                            v: 102,
+                            t: 2,
+                        },
+                        2: {
+                            v: 4,
+                            t: 2,
+                        },
+                        3: {
+                            v: 400,
+                            t: 2,
+                        },
+                    },
+                    8: {
+                        0: {
+                            v: 44934,
+                            t: 2,
+                        },
+                        1: {
+                            v: 103,
+                            t: 2,
+                        },
+                        2: {
+                            v: 5,
+                            t: 2,
+                        },
+                        3: {
+                            v: 500,
+                            t: 2,
+                        },
+                    },
+                    9: {
+                        0: {
+                            v: 44935,
+                            t: 2,
+                        },
+                        1: {
+                            v: 104,
+                            t: 2,
+                        },
+                        2: {
+                            v: 2,
+                            t: 2,
+                        },
+                        3: {
+                            v: 200,
+                            t: 2,
+                        },
+                    },
+                    10: {
+                        0: {
+                            v: 1,
+                            t: 2,
+                        },
+                        1: {
+                            v: 2,
+                            t: 2,
+                        },
+                        2: {
+                            v: 3,
+                            t: 2,
+                        },
+                    },
+                    11: {
+                        0: {
+                            v: '2',
+                            t: 4,
+                        },
+                    },
+                    12: {
+                        0: {
+                            v: '10',
+                            t: 1,
+                            p: {
+                                id: '__INTERNAL_EDITOR__DOCS_NORMAL',
+                                documentStyle: {
+                                    pageSize: {
+                                        width: 73,
+                                        height: undefined,
+                                    },
+                                    marginTop: 1,
+                                    marginBottom: 2,
+                                    marginRight: 2,
+                                    marginLeft: 2,
+                                    renderConfig: {
+                                        horizontalAlign: 0,
+                                        verticalAlign: 0,
+                                        centerAngle: 0,
+                                        vertexAngle: 0,
+                                        wrapStrategy: 0,
+                                    },
+                                },
+                                body: {
+                                    dataStream: '10\r\n',
+                                    textRuns: [
+                                        { ts: { ff: 'Arial', fs: 11 }, st: 0, ed: 1 },
+                                        { st: 1, ed: 2, ts: { ff: 'Arial', fs: 11, cl: { rgb: '#B20000' } } },
+                                    ],
+                                    paragraphs: [
+                                        { startIndex: 2, paragraphId: 'para_engine_formula_nested', paragraphStyle: { horizontalAlign: 0 } },
+                                    ],
+                                    sectionBreaks: [
+                                        { sectionId: 'section_fixture_1062', startIndex: 3 },
+                                    ],
+                                    customRanges: [],
+                                    customDecorations: [],
+                                },
+                                drawings: {},
+                                drawingsOrder: [],
+                                settings: {
+                                    zoomRatio: 1,
+                                },
+                            },
+                        },
+                    },
+                    13: {
+                        3: {
+                            v: ErrorType.DIV_BY_ZERO,
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    20: {
+                        0: {
+                            v: 'ID',
+                            t: CellValueType.STRING,
+                        },
+                        1: {
+                            v: 'Months',
+                            t: CellValueType.STRING,
+                        },
+                        3: {
+                            v: 'LIstMonths',
+                        },
+                        23: {
+                            v: 1000,
+                            t: CellValueType.NUMBER,
+                        },
+                    },
+                    21: {
+                        0: {
+                            v: 1,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'January',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    22: {
+                        0: {
+                            v: 2,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'February',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    23: {
+                        0: {
+                            v: 3,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'March',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    24: {
+                        0: {
+                            v: 4,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'April',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    26: {
+                        0: {
+                            v: 5,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'June',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    27: {
+                        0: {
+                            v: 6,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'July',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    28: {
+                        0: {
+                            v: 7,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'August',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    30: {
+                        0: {
+                            v: 8,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'October',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    32: {
+                        0: {
+                            v: 9,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: 'December',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    50: {
+                        1: {
+                            v: 'start_time',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    51: {
+                        1: {
+                            v: '2026-01-08 11:06:27 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    52: {
+                        1: {
+                            v: '2026-01-08 11:14:34 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    53: {
+                        0: {
+                            v: 44613,
+                            t: CellValueType.NUMBER,
+                        },
+                        1: {
+                            v: '2026-01-05 23:25:23 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    54: {
+                        1: {
+                            v: '2026-01-06 09:40:38 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    55: {
+                        1: {
+                            v: '2026-01-06 09:17:29 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    56: {
+                        1: {
+                            v: '2026-01-08 10:54:10 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    57: {
+                        1: {
+                            v: '2026-01-07 00:41:04 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    69: { 10: { v: 'data', t: CellValueType.STRING } },
+                    70: { 10: { v: 'Red', t: CellValueType.STRING } },
+                    71: { 10: { v: 'Blue', t: CellValueType.STRING } },
+                    72: { 10: { v: 'Red', t: CellValueType.STRING } },
+                    73: { 10: { v: 'Green', t: CellValueType.STRING } },
+                    74: { 10: { v: 'Purple', t: CellValueType.STRING } },
+                    75: { 10: { v: 'Red', t: CellValueType.STRING } },
+                    76: { 10: { v: 'White', t: CellValueType.STRING } },
+                    77: { 10: { v: 'Green', t: CellValueType.STRING } },
+                    78: { 10: { v: 'Blue', t: CellValueType.STRING } },
+                    79: { 10: { v: 'Red', t: CellValueType.STRING } },
+                    80: { 10: { v: 'Green', t: CellValueType.STRING } },
+                    81: { 10: { v: 'Purple', t: CellValueType.STRING } },
+                    58: {
+                        1: {
+                            v: '2026-01-08 10:28:46 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    59: {
+                        1: {
+                            v: '2026-01-06 01:46:22 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    60: {
+                        1: {
+                            v: '2026-01-04 03:47:28 UTC',
+                            t: CellValueType.STRING,
+                        },
+                    },
+                    97: {
+                        25: {
+                            v: 1000,
+                            t: CellValueType.NUMBER,
+                        },
+                    },
+                    98: {
+                        25: {
+                            s: 'style-only-blank',
+                        },
+                    },
+                },
+            },
+        },
+        locale: LocaleType.ZH_CN,
+        name: '',
+        sheetOrder: [],
+        styles: {
+            'style-only': {},
+        },
+    };
+};
+describe('Test nested functions', () => {
+    let get: Injector['get'];
+    let lexer: Lexer;
+    let astTreeBuilder: AstTreeBuilder;
+    let interpreter: Interpreter;
+    let formulaRuntimeService: IFormulaRuntimeService;
+    let calculate: (formula: string) => (string | number | boolean | null)[][] | string | number | boolean;
+    let calculateByRuntime: (formula: string) => Nullable<ICellData>;
+
+    beforeEach(() => {
+        const testBed = createFunctionTestBed(getFunctionsTestWorkbookData());
+
+        get = testBed.get;
+
+        lexer = get(Lexer);
+        astTreeBuilder = get(AstTreeBuilder);
+        interpreter = get(Interpreter);
+
+        const functionService = get(IFunctionService);
+
+        const formulaCurrentConfigService = get(IFormulaCurrentConfigService);
+
+        formulaRuntimeService = get(IFormulaRuntimeService);
+        const superTableService = get(ISuperTableService);
+
+        formulaCurrentConfigService.load({
+            formulaData: {},
+            arrayFormulaCellData: {},
+            arrayFormulaRange: {},
+            forceCalculate: false,
+            dirtyRanges: [],
+            dirtyNameMap: {},
+            dirtyDefinedNameMap: {},
+            dirtyUnitFeatureMap: {},
+            dirtyUnitOtherFormulaMap: {},
+            excludedCell: {},
+            allUnitData: {
+                [testBed.unitId]: testBed.sheetData,
+            },
+        });
+
+        const sheetItem = testBed.sheetData[testBed.sheetId];
+
+        formulaRuntimeService.setCurrent(
+            0,
+            0,
+            sheetItem.rowCount,
+            sheetItem.columnCount,
+            testBed.sheetId,
+            testBed.unitId
+        );
+
+        functionService.registerExecutors(
+            new If(FUNCTION_NAMES_LOGICAL.IF),
+            new Iferror(FUNCTION_NAMES_LOGICAL.IFERROR),
+            new Xlookup(FUNCTION_NAMES_LOOKUP.XLOOKUP),
+            new Max(FUNCTION_NAMES_STATISTICAL.MAX),
+            new Median(FUNCTION_NAMES_STATISTICAL.MEDIAN),
+            new Sumif(FUNCTION_NAMES_MATH.SUMIF),
+            new Sumifs(FUNCTION_NAMES_MATH.SUMIFS),
+            new Edate(FUNCTION_NAMES_DATE.EDATE),
+            new DateFunction(FUNCTION_NAMES_DATE.DATE),
+            new Datevalue(FUNCTION_NAMES_DATE.DATEVALUE),
+            new Today(FUNCTION_NAMES_DATE.TODAY),
+            new Day(FUNCTION_NAMES_DATE.DAY),
+            new Month(FUNCTION_NAMES_DATE.MONTH),
+            new Year(FUNCTION_NAMES_DATE.YEAR),
+            new NetworkdaysIntl(FUNCTION_NAMES_DATE.NETWORKDAYS_INTL),
+            new Address(FUNCTION_NAMES_LOOKUP.ADDRESS),
+            new Xmatch(FUNCTION_NAMES_LOOKUP.XMATCH),
+            new Min(FUNCTION_NAMES_STATISTICAL.MIN),
+            new Plus(FUNCTION_NAMES_META.PLUS),
+            new Minus(FUNCTION_NAMES_META.MINUS),
+            new Concatenate(FUNCTION_NAMES_TEXT.CONCATENATE),
+            new Sum(FUNCTION_NAMES_MATH.SUM),
+            new Sumproduct(FUNCTION_NAMES_MATH.SUMPRODUCT),
+            new Choose(FUNCTION_NAMES_LOOKUP.CHOOSE),
+            new Vlookup(FUNCTION_NAMES_LOOKUP.VLOOKUP),
+            new Sort(FUNCTION_NAMES_LOOKUP.SORT),
+            new Unique(FUNCTION_NAMES_LOOKUP.UNIQUE),
+            new Len(FUNCTION_NAMES_TEXT.LEN),
+            new Compare(FUNCTION_NAMES_META.COMPARE),
+            new Divided(FUNCTION_NAMES_META.DIVIDED),
+            new Multiply(FUNCTION_NAMES_META.MULTIPLY),
+            new Product(FUNCTION_NAMES_MATH.PRODUCT),
+            new Fact(FUNCTION_NAMES_MATH.FACT),
+            new T(FUNCTION_NAMES_TEXT.T),
+            new Text(FUNCTION_NAMES_TEXT.TEXT),
+            new Textjoin(FUNCTION_NAMES_TEXT.TEXTJOIN),
+            new Hyperlink(FUNCTION_NAMES_LOOKUP.HYPERLINK),
+            new Row(FUNCTION_NAMES_LOOKUP.ROW),
+            new Match(FUNCTION_NAMES_LOOKUP.MATCH),
+            new Offset(FUNCTION_NAMES_LOOKUP.OFFSET),
+            new Index(FUNCTION_NAMES_LOOKUP.INDEX),
+            new Countif(FUNCTION_NAMES_STATISTICAL.COUNTIF),
+            new Left(FUNCTION_NAMES_TEXT.LEFT)
+        );
+
+        superTableService.registerTable(testBed.unitId, 'data', {
+            sheetId: testBed.sheetId,
+            titleMap: new Map([['data', 10]]),
+            range: {
+                startRow: 69,
+                endRow: 81,
+                startColumn: 10,
+                endColumn: 10,
+            },
+        });
+
+        calculate = (formula: string) => {
+            const lexerNode = lexer.treeBuilder(formula);
+
+            const astNode = astTreeBuilder.parse(lexerNode as LexerNode);
+
+            const result = interpreter.execute(generateExecuteAstNodeData(astNode as BaseAstNode));
+
+            return getObjectValue(result);
+        };
+
+        calculateByRuntime = (formula: string) => {
+            const lexerNode = lexer.treeBuilder(formula);
+
+            const astNode = astTreeBuilder.parse(lexerNode as LexerNode);
+
+            const valueObject = interpreter.execute(generateExecuteAstNodeData(astNode as BaseAstNode));
+
+            formulaRuntimeService.setRuntimeData(valueObject);
+
+            const cellMatrix = formulaRuntimeService.getUnitData()?.[testBed.unitId]?.[testBed.sheetId];
+
+            return cellMatrix?.getValue(formulaRuntimeService.currentRow, formulaRuntimeService.currentColumn);
+        };
+    });
+
+    describe('Normal', () => {
+        it('LET combines unique values and counts before descending sort', () => {
+            const result = calculate('=LET(u,UNIQUE(data[]),SORT(CHOOSE({1,2},u,COUNTIF(data[],u)),2,-1))');
+
+            expect(result).toStrictEqual([
+                ['Red', 4],
+                ['Green', 3],
+                ['Blue', 2],
+                ['Purple', 2],
+                ['White', 1],
+            ]);
+        });
+
+        it('keeps LET parameter bindings when the same formula is parsed again', () => {
+            const formula = '=LET(u,UNIQUE(data[]),SORT(CHOOSE({1,2},u,COUNTIF(data[],u)),2,-1))';
+            const expected = [
+                ['Red', 4],
+                ['Green', 3],
+                ['Blue', 2],
+                ['Purple', 2],
+                ['White', 1],
+            ];
+
+            expect(calculate(formula)).toStrictEqual(expected);
+            expect(calculate(formula)).toStrictEqual(expected);
+        });
+
+        it('Nested functions IFERROR,XLOOKUP,MAX,SUMIFS,EDATE,TODAY,DAY,PLUS,Minus,CONCATENATE', () => {
+            const result = calculate('=IFERROR(XLOOKUP(MAX(SUMIFS(C2:C10, A2:A10, ">="&EDATE(TODAY(),-1)+1-DAY(TODAY()), A2:A10, "<"&TODAY()-DAY(TODAY())+1)), SUMIFS(C2:C10, A2:A10, ">="&EDATE(TODAY(),-1)+1-DAY(TODAY()), A2:A10, "<"&TODAY()-DAY(TODAY())+1), B2:B10, "No Data"), "No Data")');
+
+            expect(result).toStrictEqual([
+                [101],
+                [102],
+                [103],
+                [104],
+                [105],
+                [101],
+                [102],
+                [103],
+                [104],
+            ]);
+        });
+
+        it('Nested functions IFERROR,INDEX,XMATCH catches no-match array lookup errors', () => {
+            const result = calculate('=IFERROR(INDEX(D2:D4,XMATCH(1,(B2:B4=999)*(A2:A4=45688),0)),"")');
+
+            expect(result).toBe('');
+        });
+
+        it('Nested functions IFERROR,INDEX catches errors from referenced cells', () => {
+            const result = calculate('=IFERROR(INDEX(D14:D14,1),"")');
+
+            expect(result).toBe('');
+        });
+
+        it('Nested functions IFERROR,INDEX converts blank referenced cells to zero', () => {
+            const result = calculate('=IFERROR(INDEX(Z99:Z99,1),"")');
+
+            expect(result).toBe(0);
+        });
+
+        it('Nested functions IF,INDEX converts selected blank referenced cells to zero', () => {
+            const result = calculate('=IF(FALSE,1,INDEX(Z99:Z99,1))');
+
+            expect(result).toBe(0);
+        });
+
+        it('Nested functions IF,INDEX writes selected style-only blank references as zero', () => {
+            const result = calculateByRuntime('=IF(FALSE,1,INDEX(Z99:Z99,1))');
+
+            expect(result?.v).toBe(0);
+            expect(result?.t).toBe(CellValueType.NUMBER);
+        });
+
+        it('Nested functions NETWORKDAYS.INTL ignores non-date values in dynamic holiday ranges', () => {
+            expect(calculate('=NETWORKDAYS.INTL(44613,44613,"0000000",A1:A54)')).toBe(0);
+            expect(calculate('=NETWORKDAYS.INTL(44613,44613,"0000000",A1:INDEX(A:A,MATCH(9E+99,A:A),1))')).toBe(0);
+        });
+
+        it('Nested date functions treat numeric-string cell values as serial numbers', () => {
+            expect(calculate('=DATE(YEAR(43497),MONTH(43497)+1,1)')).toBe(43525);
+            expect(calculate('=DATE(YEAR(X2),MONTH(X2)+1,1)')).toBe(43525);
+            expect(calculate('=DATE(YEAR(Y2),MONTH(Y2)+1,1)')).toBe(43525);
+        });
+
+        it('Nested functions MATCH keeps lazy IF selected reference branches as lookup arrays', () => {
+            const result = calculate('=MATCH(102,IF(@A1:A3=A1,B1:B3),0)');
+
+            expect(result).toBe(3);
+        });
+
+        it('Nested functions IF keeps selected single-cell references scalar', () => {
+            const result = calculate('=IF(TRUE,B2,0)');
+
+            expect(result).toBe(101);
+        });
+
+        it('Nested INDEX selects from a vertical array constant using MATCH', () => {
+            expect(calculate('=INDEX({"2013-02-10";"2014-01-31"},MATCH(2014,{2013;2014},0))')).toStrictEqual([['2014-01-31']]);
+            expect(calculate('=DATEVALUE(INDEX({"2013-02-10";"2014-01-31"},MATCH(2014,{2013;2014},0)))')).toStrictEqual([[41670]]);
+        });
+
+        it('COUNTIF treats an incomplete comparison from an OFFSET blank as no match', () => {
+            formulaRuntimeService.setCurrent(
+                20,
+                25,
+                formulaRuntimeService.currentRowCount,
+                formulaRuntimeService.currentColumnCount,
+                formulaRuntimeService.currentSubUnitId,
+                formulaRuntimeService.currentUnitId
+            );
+
+            expect(calculate('=">="&OFFSET(X21,1,0,1,1)')).toStrictEqual([['>=']]);
+            expect(calculate('=COUNTIF(D2:D4,">="&OFFSET(X21,1,0,1,1))')).toBe(0);
+            expect(calculate('=COUNTIF(D2:D4,">="&X21)-COUNTIF(D2:D4,">="&OFFSET(X21,1,0,1,1))')).toBe(0);
+        });
+
+        it('Nested CHOOSE evaluates explicit implicit intersections', () => {
+            formulaRuntimeService.setCurrent(
+                2,
+                0,
+                formulaRuntimeService.currentRowCount,
+                formulaRuntimeService.currentColumnCount,
+                formulaRuntimeService.currentSubUnitId,
+                formulaRuntimeService.currentUnitId
+            );
+
+            expect(calculate('=@CHOOSE({1,2},@A2:A4&"|"&@B2:B4,C2:C4)')).toBe('44928|102');
+        });
+
+        it('Nested VLOOKUP consumes a CHOOSE table with explicit implicit intersections', () => {
+            formulaRuntimeService.setCurrent(
+                2,
+                0,
+                formulaRuntimeService.currentRowCount,
+                formulaRuntimeService.currentColumnCount,
+                formulaRuntimeService.currentSubUnitId,
+                formulaRuntimeService.currentUnitId
+            );
+
+            expect(calculate('=VLOOKUP(A3&"|"&B3,CHOOSE({1,2},@A2:A4&"|"&@B2:B4,C2:C4),2,FALSE)')).toStrictEqual([[5]]);
+        });
+
+        it('Nested SUMPRODUCT preserves SUMIFS arrays and evaluates explicit intersections', () => {
+            formulaRuntimeService.setCurrent(
+                1,
+                0,
+                formulaRuntimeService.currentRowCount,
+                formulaRuntimeService.currentColumnCount,
+                formulaRuntimeService.currentSubUnitId,
+                formulaRuntimeService.currentUnitId
+            );
+
+            expect(calculate('=SUMPRODUCT(SUMIFS(D2:D4,A2:A4,A2:A4)*IF(3>=@C2:C4,B2:B4,D2:D4))')).toBe(380000);
+            expect(calculate('=SUMPRODUCT(IF(A1="ALL",1,@A2:A4=A3)*D2:D4)')).toBe(0);
+        });
+
+        it('Nested MEDIAN uses explicit intersection for IF conditions while preserving the selected range', () => {
+            formulaRuntimeService.setCurrent(
+                formulaRuntimeService.currentRow,
+                formulaRuntimeService.currentColumn,
+                formulaRuntimeService.currentRowCount,
+                formulaRuntimeService.currentColumnCount,
+                formulaRuntimeService.currentSubUnitId,
+                formulaRuntimeService.currentUnitId
+            );
+
+            expect(calculate('=MEDIAN(IF(@A1:A5=A1,B1:B5))')).toBe(102.5);
+            expect(calculate('=MEDIAN(IF(@A1:A5="missing",B1:B5))')).toBe(0);
+        });
+
+        it('Nested TEXTJOIN preserves IF text arrays after explicit intersection', () => {
+            formulaRuntimeService.setCurrent(
+                formulaRuntimeService.currentRow,
+                formulaRuntimeService.currentColumn,
+                formulaRuntimeService.currentRowCount,
+                formulaRuntimeService.currentColumnCount,
+                formulaRuntimeService.currentSubUnitId,
+                formulaRuntimeService.currentUnitId
+            );
+
+            expect(calculate('=TEXTJOIN(", ",TRUE,IF(@A1:A3<>"",B1:B3,""))')).toBe('B, 101, 102');
+        });
+
+        it('Nested functions XMATCH keeps Formula2 binary lookup ranges as arrays', () => {
+            const result = calculate('=INDEX(C2:C4,XMATCH(1,(@A2:A4=A3)*(@B2:B4=B3),0))');
+
+            expect(result).toStrictEqual([[3]]);
+        });
+
+        it('Nested INDEX returns its selected cell through explicit implicit intersection', () => {
+            expect(calculate('=@INDEX(C2:C4,2)')).toBe(3);
+        });
+
+        it('Nested functions MATCH keeps bare Formula2 at ranges scalar in lookup products', () => {
+            const result = calculate('=IFERROR(INDEX(C2:C4,MATCH(44928,(@B2:B4=B3)*(@A2:A4),0)),"")');
+
+            expect(result).toBe('');
+        });
+
+        it('Nested functions INDEX,MATCH,COUNTIF returns the first unseen value from a range', () => {
+            const result = calculate('=INDEX(V1:V2,MATCH(0,COUNTIF($U$1:U2,V1:V2),0))');
+
+            expect(result).toStrictEqual([[21]]);
+        });
+
+        it('Nested functions INDEX,MATCH,COUNTIF skips blank criteria already present in the counted range', () => {
+            const result = calculate('=INDEX(W1:W2,MATCH(0,COUNTIF($U$1:U2,W1:W2),0))');
+
+            expect(result).toStrictEqual([[21]]);
+        });
+
+        it('Nested functions ADDRESS,XMATCH,MIN,SUMIFS,EDATE,TODAY,DAY', () => {
+            const result = calculate('=ADDRESS(XMATCH(MIN(SUMIFS(C2:C10, A2:A10, ">=" & EDATE(TODAY(), -1) + 1 - DAY(TODAY()), A2:A10, "<" & TODAY() - DAY(TODAY()) + 1)), SUMIFS(C2:C10, A2:A10, ">=" & EDATE(TODAY(), -1) + 1 - DAY(TODAY()), A2:A10, "<" & TODAY() - DAY(TODAY()) + 1), 0) + 1, 2)');
+
+            expect(result).toStrictEqual([['$B$2']]);
+        });
+
+        it('SUM, CHOOSE', () => {
+            let result = calculate('=SUM(A2:CHOOSE(2,B2,C2))');
+
+            expect(result).toStrictEqual(45033);
+
+            result = calculate('=SUM(CHOOSE(1,A2:B2))');
+
+            expect(result).toStrictEqual(45028);
+
+            result = calculate('=SUM(CHOOSE({1,1},A2:B2))');
+
+            expect(result).toStrictEqual(45028);
+
+            result = calculate('=SUM(CHOOSE({1,1,1},A2:B2))');
+
+            expect(result).toStrictEqual(ErrorType.NA);
+
+            result = calculate('=SUM(CHOOSE({1,2},A2:B2))');
+
+            expect(result).toStrictEqual(ErrorType.VALUE);
+        });
+
+        it('Parsing of double-quoted strings', () => {
+            let result = calculate('=E1');
+            expect(result).toStrictEqual([['"test"']]);
+
+            result = calculate('="test"');
+            expect(result).toStrictEqual('test');
+        });
+
+        it('Len gets length from formula result', () => {
+            let result = calculate('=LEN(1/3)');
+            expect(result).toStrictEqual(14);
+
+            result = calculate('=LEN(0.1+0.2)');
+            expect(result).toStrictEqual(3);
+        });
+
+        it('Sumifs test, range is number, criteria is number string', () => {
+            let result = calculate('=SUMIFS(A11:C11,A11:C11,"2")');
+            expect(result).toBe(2);
+
+            result = calculate('=SUMIFS(A11:C11,A11:C11,A12)');
+            expect(result).toBe(2);
+
+            result = calculate('=SUMIFS(A11:C11,A11:C11,"2",A11:C11,3)');
+            expect(result).toBe(0);
+
+            result = calculate('=SUMIFS(A11:C11,A11:C11,"2",A11:C11,2)');
+            expect(result).toBe(2);
+
+            result = calculate('=SUMIF(A11:C11,"1",A11:C11)');
+            expect(result).toBe(1);
+
+            result = calculate('=SUMIF(A11:C11,3,A11:C11)');
+            expect(result).toBe(3);
+
+            result = calculate('=SUMIF(A11:C11,A12,A11:C11)');
+            expect(result).toBe(2);
+        });
+
+        it('Product test, cell number string ignore, param number string can be calculated', () => {
+            let result = calculate('=PRODUCT(A12)');
+            expect(result).toBe(0);
+
+            result = calculate('=PRODUCT("2")');
+            expect(result).toBe(2);
+        });
+
+        it('value is rich text', () => {
+            let result = calculate('=SUM(A13)');
+            expect(result).toStrictEqual(0);
+
+            result = calculate('=FACT(A13)');
+            expect(result).toStrictEqual([
+                [3628800],
+            ]);
+        });
+
+        it('Text formula test', () => {
+            const result = calculate('=TEXT(1234, "000000")');
+            expect(result).toBe('001234');
+        });
+
+        it('T formula test', () => {
+            const result = calculate('=T(A1:E1)');
+            expect(result).toStrictEqual('A');
+        });
+
+        it('Hyperlink formula test', () => {
+            // test with a normal value
+            const result = calculateByRuntime('=HYPERLINK("https://univer.ai/", "Univer")');
+            const richTextValue = RichTextValue.create(result?.p as IDocumentData);
+            expect(richTextValue.toPlainText()).toBe('Univer');
+            const link = richTextValue.getLinks()[0] as ICustomRange;
+            expect(link.rangeType).toBe(CustomRangeType.HYPERLINK);
+            expect((link as IHyperLinkCustomRange).properties?.url).toBe('https://univer.ai/');
+
+            // test with a range reference
+            const result2 = calculateByRuntime('=HYPERLINK("#Sheet1!A1", "Go to A1")');
+            const richTextValue2 = RichTextValue.create(result2?.p as IDocumentData);
+            expect(richTextValue2.toPlainText()).toBe('Go to A1');
+            const link2 = richTextValue2.getLinks()[0] as ICustomRange;
+            expect(link2.rangeType).toBe(CustomRangeType.HYPERLINK);
+            expect((link2 as IHyperLinkCustomRange).properties?.url).toBe('#gid=sheet1&range=A1');
+
+            // test with a url without protocol
+            const result3 = calculateByRuntime('=HYPERLINK("google.com", "Google")');
+            const richTextValue3 = RichTextValue.create(result3?.p as IDocumentData);
+            expect(richTextValue3.toPlainText()).toBe('Google');
+            const link3 = richTextValue3.getLinks()[0] as ICustomRange;
+            expect(link3.rangeType).toBe(CustomRangeType.HYPERLINK);
+            expect((link3 as IHyperLinkCustomRange).properties?.url).toBe('https://google.com');
+
+            // test with a range reference not in the current workbook
+            const result4 = calculateByRuntime('=HYPERLINK("#Sheet123!A1", "Go to A1")');
+            const richTextValue4 = RichTextValue.create(result4?.p as IDocumentData);
+            expect(richTextValue4.toPlainText()).toBe('Go to A1');
+            const link4 = richTextValue4.getLinks()[0] as ICustomRange;
+            expect(link4.rangeType).toBe(CustomRangeType.HYPERLINK);
+            expect((link4 as IHyperLinkCustomRange).properties?.url).toBe('#Sheet123!A1');
+
+            // test with an empty URL and label
+            const result5 = calculateByRuntime('=HYPERLINK("")');
+            expect(result5?.v).toBe('');
+            expect(result5?.p).toBeUndefined();
+        });
+
+        it('Index formula test', () => {
+            const result = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(22-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result).toStrictEqual('January');
+
+            const result2 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(23-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result2).toStrictEqual('February');
+
+            const result3 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(24-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result3).toStrictEqual('March');
+
+            const result4 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(25-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result4).toStrictEqual('April');
+
+            const result5 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(26-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result5).toStrictEqual('June');
+
+            const result6 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(27-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result6).toStrictEqual('July');
+
+            const result7 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(28-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result7).toStrictEqual('August');
+
+            const result8 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(29-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result8).toStrictEqual('October');
+
+            const result9 = calculate('=IFERROR(INDEX($B$22:$B$33,MATCH(30-ROW($D$21),$A$22:$A$33,0)),"")');
+            expect(result9).toStrictEqual('December');
+        });
+
+        it('Left formula compare test', () => {
+            const result = calculate('=LEFT($B$52:$B$61,10)="2026-01-04"');
+            expect(result).toStrictEqual([
+                [false],
+                [false],
+                [false],
+                [false],
+                [false],
+                [false],
+                [false],
+                [false],
+                [false],
+                [true],
+            ]);
+        });
+    });
+});

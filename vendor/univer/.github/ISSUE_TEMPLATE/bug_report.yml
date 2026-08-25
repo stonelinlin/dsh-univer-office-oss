@@ -1,0 +1,68 @@
+name: 🐛 Bug report
+description: Create a report to help us improve.
+type: Bug
+labels: bug 🐛
+title: '[Bug] '
+
+body:
+    - type: markdown
+      attributes:
+          value: |
+              **Thank you for helping us improve Univer!**
+
+              > [!CAUTION]
+              > Before submitting a bug report, please ensure that you have read the [Univer GitHub Issues Community Guide](https://github.com/dream-num/univer/wiki/Univer-GitHub-Issues-Community-Guide).
+
+    - type: checkboxes
+      id: initial-checklist
+      attributes:
+          label: Before you submit this issue, have you checked the following
+          options:
+              - label: Is this really a problem?
+                required: true
+              - label: I have searched the Github Issues for similar issues, but did not find anything.
+                required: true
+
+    - type: input
+      id: affected-versions
+      attributes:
+          label: Affected packages and versions
+          description: Please test using the latest version of the relevant packages to make sure your issue has not already been fixed.
+      validations:
+          required: true
+
+    - type: textarea
+      id: steps-to-reproduce
+      attributes:
+          label: Reproduction link
+          description: |
+              > [!CAUTION]
+              > Please note that it is essential to provide a reproduction and describe the reproduction steps in detail. **If you cannot provide a reproduction link, your issue may be closed directly.**
+
+              We provide a [Vite online template](https://stackblitz.com/edit/univer-sheets-vite) and a [UMD online template](https://stackblitz.com/edit/univer-sheets-umd). If your issue can be reproduced in one of these templates, please provide the reproduction link here.
+              We also provide some other [template repositories](https://github.com/awesome-univer), you can choose one of them to reproduce your issue.
+              If your issue cannot be reproduced in the template, please provide as detailed reproduction steps as possible.
+      validations:
+          required: true
+
+    - type: textarea
+      id: expected-behavior
+      attributes:
+          label: Expected behavior
+          description: What should happen?
+      validations:
+          required: true
+
+    - type: textarea
+      id: actual-behavior
+      attributes:
+          label: Actual behavior
+          description: What happens instead?
+      validations:
+          required: true
+
+    - type: textarea
+      id: system-info
+      attributes:
+          label: System information
+          description: Output of `npx envinfo --system --binaries --browsers`

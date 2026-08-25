@@ -1,0 +1,359 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ICellData, ICellDataForSheetInterceptor, IDocumentBody, IRange, Nullable, Workbook } from '@univerjs/core';
+import type {
+    INumfmtItemWithCache,
+    IRemoveNumfmtMutationParams,
+    ISetCellsNumfmt,
+    ISetNumfmtMutationParams,
+} from '@univerjs/sheets';
+import {
+    CellValueType,
+    Disposable,
+    getNumfmtParseValueFilter,
+    Inject,
+    Injector,
+    isRealNum,
+    isTextFormat,
+    IUniverInstanceService,
+    Optional,
+    toDisposable,
+    UniverInstanceType,
+    willLoseNumericPrecision,
+} from '@univerjs/core';
+import { stripErrorMargin } from '@univerjs/engine-formula';
+import {
+    AFTER_CELL_EDIT,
+    BEFORE_CELL_EDIT,
+    factoryRemoveNumfmtUndoMutation,
+    factorySetNumfmtUndoMutation,
+    INumfmtService,
+    RemoveNumfmtMutation,
+    SetNumfmtMutation,
+    SetRangeValuesCommand,
+    SheetInterceptorService,
+    transformCellsToRange,
+} from '@univerjs/sheets';
+import { getPatternType } from '@univerjs/sheets-numfmt';
+import { IEditorBridgeService } from '@univerjs/sheets-ui';
+
+const createCollectEffectMutation = () => {
+    interface IConfig {
+        unitId: string;
+        subUnitId: string;
+        row: number;
+        col: number;
+        value: Nullable<INumfmtItemWithCache>;
+    }
+    let list: IConfig[] = [];
+    const add = (unitId: string, subUnitId: string, row: number, col: number, value: Nullable<INumfmtItemWithCache>) =>
+        list.push({ unitId, subUnitId, row, col, value });
+    const getEffects = () => list;
+    const clean = () => {
+        list = [];
+    };
+    return {
+        add,
+        getEffects,
+        clean,
+    };
+};
+
+export class NumfmtEditorController extends Disposable {
+    // collect effect mutations when edit end and push this to  commands stack in next commands progress
+    private _collectEffectMutation = createCollectEffectMutation();
+
+    constructor(
+        @Inject(SheetInterceptorService) private _sheetInterceptorService: SheetInterceptorService,
+        @Inject(INumfmtService) private _numfmtService: INumfmtService,
+        @Inject(IUniverInstanceService) private _univerInstanceService: IUniverInstanceService,
+        @Inject(Injector) private _injector: Injector,
+        @Optional(IEditorBridgeService) private _editorBridgeService?: IEditorBridgeService
+    ) {
+        super();
+        this._initInterceptorEditorStart();
+        this._initInterceptorEditorEnd();
+        this._initInterceptorCommands();
+    }
+
+    private _initInterceptorEditorStart() {
+        if (!this._editorBridgeService) {
+            return;
+        }
+
+        this.disposeWithMe(
+            toDisposable(
+                this._sheetInterceptorService.writeCellInterceptor.intercept(BEFORE_CELL_EDIT, {
+                    handler: (value, context, next) => {
+                        /**
+                         * This value is get by `worksheet.getCell()`, it has been processed by cell content interceptor, and used to display in cell render, so it should be the final value after all the processing of number format.
+                         * But the editor has different requirement for different number format type, so we need to get the raw cell value and number format value to determine the final value for editor.
+                         */
+                        const row = context.row;
+                        const col = context.col;
+                        const numfmtCell = this._numfmtService.getValue(
+                            context.unitId,
+                            context.subUnitId,
+                            row,
+                            col
+                        );
+                        if (numfmtCell) {
+                            const type = getPatternType(numfmtCell.pattern);
+                            switch (type) {
+                                /**
+                                 * For scientific, currency, grouped and number format, the editor should display the raw number value without format, unlike the cell render which display the formatted value.
+                                 */
+                                case 'scientific':
+                                case 'currency':
+                                case 'grouped':
+                                case 'number': {
+                                    const cell: Nullable<ICellData> = { ...context.worksheet.getCellRaw(row, col) };
+                                    if (cell?.t === CellValueType.NUMBER && isRealNum(cell.v)) {
+                                        cell.v = stripErrorMargin(Number(cell.v));
+                                    }
+                                    return next && next(cell);
+                                }
+                                /**
+                                 * For percent format, the editor should display the full percent value, unlike the cell render which display the limited decimal places.
+                                 * e.g. { v: 1.001234567, t: 2, s: { n: { pattern: '0.00%' } } } should display as '100.12%' in cell render, but when edit this cell, the editor should display '100.1234567%' rather than '100.12%'.
+                                 * If the editor also display '100.12%', will lose precision when before edit.
+                                 */
+                                case 'percent': {
+                                    const cell: Nullable<ICellDataForSheetInterceptor> = { ...context.worksheet.getCellRaw(row, col) };
+                                    if (cell?.t === CellValueType.NUMBER && isRealNum(cell.v)) {
+                                        cell.v = `${stripErrorMargin(Number(cell.v) * 100)}%`;
+                                        cell.isPercentFormat = true;
+                                    }
+                                    return next && next(cell);
+                                }
+                                /**
+                                 * For date, time and datetime format, the editor should display the formatted value like the cell render.
+                                 */
+                                case 'date':
+                                case 'time':
+                                case 'datetime':
+                                default: {
+                                    return next && next(value);
+                                }
+                            }
+                        }
+                        return next(value);
+                    },
+                })
+            )
+        );
+    }
+
+    /**
+     * Process the  values after  edit
+     * @private
+     * @memberof NumfmtService
+     */
+    // eslint-disable-next-line max-lines-per-function
+    private _initInterceptorEditorEnd() {
+        this.disposeWithMe(
+            toDisposable(
+                this._sheetInterceptorService.writeCellInterceptor.intercept(AFTER_CELL_EDIT, {
+                    // eslint-disable-next-line max-lines-per-function,complexity
+                    handler: (value, context, next) => {
+                        if (!value?.v && !value?.p) {
+                            return next(value);
+                        }
+
+                        // clear the effect
+                        this._collectEffectMutation.clean();
+                        const currentNumfmtValue = this._numfmtService.getValue(
+                            context.unitId,
+                            context.subUnitId,
+                            context.row,
+                            context.col
+                        );
+
+                        const originCell = context.worksheet.getCellRaw(context.row, context.col);
+
+                        // if the cell is text format or force string, do not convert the value
+                        if (isTextFormat(currentNumfmtValue?.pattern) || value.t === CellValueType.FORCE_STRING) {
+                            return next(value);
+                        }
+
+                        const body = value.p?.body;
+                        const content = value?.p?.body?.dataStream ? value.p.body.dataStream.replace(/\r\n$/, '') : String(value.v);
+                        const numfmtInfo = getNumfmtParseValueFilter(content);
+
+                        if (body) {
+                            if (!canConvertRichTextToNumfmt(body)) {
+                                return next(value);
+                            } else {
+                                const { dataStream } = body;
+                                const dataStreamWithoutEnd = dataStream.replace(/\r\n$/, '');
+                                const num = Number(dataStreamWithoutEnd);
+                                if (Number.isNaN(num) && !numfmtInfo) {
+                                    return next(value);
+                                }
+                            }
+                        }
+
+                        if (numfmtInfo) {
+                            // If the content is parsed to a number format or the origin cell has a number format, do not need judge whether it will lose precision.
+                            // If the cell type is string or force string, do not need judge whether it will lose precision.
+                            // If the numeric string will lose precision when converted to a number, set the cell type to force string
+                            // e.g. 123456789123456789
+                            // e.g. 1212121212121212.2345
+                            if (
+                                !numfmtInfo.z &&
+                                !currentNumfmtValue?.pattern &&
+                                originCell?.t !== CellValueType.STRING &&
+                                originCell?.t !== CellValueType.FORCE_STRING &&
+                                willLoseNumericPrecision(content)
+                            ) {
+                                return next({
+                                    ...value,
+                                    p: undefined,
+                                    v: content,
+                                    t: CellValueType.FORCE_STRING,
+                                });
+                            }
+
+                            /**
+                             * Only when the content has number format pattern but the current cell has no pattern, or the pattern type is different, need to update the number format.
+                             * Different currency symbols also should not be updated in Excel.
+                             */
+                            if (numfmtInfo.z && (!currentNumfmtValue?.pattern || getPatternType(numfmtInfo.z) !== getPatternType(currentNumfmtValue.pattern))) {
+                                this._collectEffectMutation.add(
+                                    context.unitId,
+                                    context.subUnitId,
+                                    context.row,
+                                    context.col,
+                                    {
+                                        pattern: numfmtInfo.z,
+                                    }
+                                );
+                            }
+
+                            const v = stripErrorMargin(Number(numfmtInfo.v), 16);
+
+                            return next({ ...value, p: undefined, v, t: CellValueType.NUMBER });
+                        }
+
+                        return next(value);
+                    },
+                })
+            )
+        );
+    }
+
+    private _initInterceptorCommands() {
+        const self = this;
+        this.disposeWithMe(
+            this._sheetInterceptorService.interceptCommand({
+                getMutations(command) {
+                    switch (command.id) {
+                        case SetRangeValuesCommand.id: {
+                            const workbook = self._univerInstanceService.getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET)!;
+                            const unitId = workbook.getUnitId();
+                            const subUnitId = workbook.getActiveSheet()?.getSheetId();
+                            if (!subUnitId) {
+                                return {
+                                    redos: [],
+                                    undos: [],
+                                };
+                            }
+                            const list = self._collectEffectMutation.getEffects();
+                            self._collectEffectMutation.clean();
+                            if (!list.length) {
+                                return {
+                                    redos: [],
+                                    undos: [],
+                                };
+                            }
+                            const cells: ISetCellsNumfmt = list
+                                .filter((item) => !!item.value?.pattern)
+                                .map((item) => ({
+                                    row: item.row,
+                                    col: item.col,
+                                    pattern: item.value!.pattern,
+                                }));
+                            const removeCells: IRange[] = list
+                                .filter((item) => !item.value?.pattern)
+                                .map((item) => ({
+                                    startRow: item.row,
+                                    endColumn: item.col,
+                                    startColumn: item.col,
+                                    endRow: item.row,
+                                }));
+                            const redos = [];
+                            const undos = [];
+                            if (cells.length) {
+                                const redo = {
+                                    id: SetNumfmtMutation.id,
+                                    params: transformCellsToRange(unitId, subUnitId, cells) as ISetNumfmtMutationParams,
+                                };
+                                redos.push(redo);
+                                undos.push(...factorySetNumfmtUndoMutation(self._injector, redo.params));
+                            }
+                            if (removeCells.length) {
+                                const redo = {
+                                    id: RemoveNumfmtMutation.id,
+                                    params: {
+                                        unitId,
+                                        subUnitId,
+                                        ranges: removeCells,
+                                    } as IRemoveNumfmtMutationParams,
+                                };
+                                redos.push(redo);
+                                undos.push(...factoryRemoveNumfmtUndoMutation(self._injector, redo.params));
+                            }
+                            return {
+                                redos,
+                                undos: undos.reverse(),
+                            };
+                        }
+                    }
+                    return {
+                        redos: [],
+                        undos: [],
+                    };
+                },
+            })
+        );
+    }
+
+    override dispose(): void {
+        super.dispose();
+        this._collectEffectMutation.clean();
+    }
+}
+
+function canConvertRichTextToNumfmt(body: IDocumentBody): boolean {
+    const { textRuns = [], paragraphs = [], customRanges, customBlocks = [] } = body;
+
+    // Some styles are unique to rich text. When this style appears, we consider the value to be rich text.
+    const richTextStyle = ['va'];
+
+    return !(
+        textRuns.some((textRun) => {
+            const hasRichTextStyle = Boolean(textRun.ts && Object.keys(textRun.ts).some((property) => {
+                return richTextStyle.includes(property);
+            }));
+            return hasRichTextStyle;
+        }) ||
+        paragraphs.some((paragraph) => paragraph.bullet) ||
+        paragraphs.length >= 2 ||
+        Boolean(customRanges?.length) ||
+        customBlocks.length > 0
+    );
+}

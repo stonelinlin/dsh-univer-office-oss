@@ -1,0 +1,212 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type {
+    IAccessor,
+    ICellData,
+    IMutation,
+    IMutationCommonParams,
+    IObjectMatrixPrimitiveType,
+    IRange,
+    Nullable,
+    Styles,
+    Workbook,
+} from '@univerjs/core';
+import { CommandType, IUniverInstanceService, ObjectMatrix, Tools, UniverInstanceType } from '@univerjs/core';
+import { handleStyle, transformStyle } from '../../basics/cell-style';
+import { getCellType } from '../../basics/cell-type';
+import { getCellValue, setNull } from '../../basics/cell-value';
+
+/** Params of `SetRangeValuesMutation` */
+export interface ISetRangeValuesMutationParams extends IMutationCommonParams {
+    subUnitId: string;
+    unitId: string;
+
+    /**
+     * null for clear all
+     */
+    cellValue?: IObjectMatrixPrimitiveType<Nullable<ICellData>>;
+
+    /**
+     * Whether to override the style of the cell, used for paste related operations.
+     * @default false
+     */
+    isOverrideStyle?: boolean;
+}
+
+export interface ISetRangeValuesRangeMutationParams extends ISetRangeValuesMutationParams {
+    range: IRange[];
+}
+
+/**
+ * Generate undo mutation of a `SetRangeValuesMutation`
+ *
+ * @param {IAccessor} accessor - injector accessor
+ * @param {ISetRangeValuesMutationParams} params - do mutation params
+ * @returns {ISetRangeValuesMutationParams} undo mutation params
+ */
+export const SetRangeValuesUndoMutationFactory = (
+    accessor: IAccessor,
+    params: ISetRangeValuesMutationParams
+): ISetRangeValuesMutationParams => {
+    const { unitId, subUnitId, cellValue, isOverrideStyle } = params;
+    const univerInstanceService = accessor.get(IUniverInstanceService);
+    const workbook = univerInstanceService.getUnit<Workbook>(unitId, UniverInstanceType.UNIVER_SHEET);
+
+    if (workbook == null) {
+        throw new Error('workbook is null error!');
+    }
+
+    const worksheet = workbook.getSheetBySheetId(subUnitId);
+    if (worksheet == null) {
+        throw new Error('worksheet is null error!');
+    }
+
+    const cellMatrix = worksheet.getCellMatrix();
+    const styles = workbook.getStyles();
+    const undoData = new ObjectMatrix<Nullable<ICellData>>();
+
+    const newValues = new ObjectMatrix(cellValue);
+
+    newValues.forValue((row, col, newVal) => {
+        const cell = Tools.deepClone(cellMatrix?.getValue(row, col)) || {}; // clone cell data，prevent modify the original data
+        const oldStyle = styles.getStyleByCell(cell);
+        // transformStyle does not accept style id
+        const newStyle = styles.getStyleByCell(newVal);
+
+        cell.s = isOverrideStyle && Object.prototype.hasOwnProperty.call(newVal ?? {}, 's')
+            ? oldStyle ?? null
+            : transformStyle(oldStyle, newStyle);
+
+        undoData.setValue(row, col, setNull(cell));
+    });
+
+    return {
+        ...params,
+        cellValue: undoData.getMatrix(),
+    } as ISetRangeValuesMutationParams;
+};
+
+export const SetRangeValuesMutation: IMutation<ISetRangeValuesMutationParams, boolean> = {
+    id: 'sheet.mutation.set-range-values',
+
+    type: CommandType.MUTATION,
+
+    handler: (accessor, params) => {
+        const { cellValue, subUnitId, unitId, isOverrideStyle } = params;
+        const univerInstanceService = accessor.get(IUniverInstanceService);
+        const workbook = univerInstanceService.getUnit<Workbook>(unitId);
+        if (!workbook) {
+            return false;
+        }
+
+        const worksheet = workbook.getSheetBySheetId(subUnitId);
+        if (!worksheet) {
+            return false;
+        }
+
+        const cellMatrix = worksheet.getCellMatrix();
+        const styles = workbook.getStyles();
+        const newValues = new ObjectMatrix(cellValue);
+
+        newValues.forValue((row, col, newVal) => {
+            // clear all
+            if (!newVal) {
+                cellMatrix.realDeleteValue(row, col);
+            } else {
+                let oldVal = cellMatrix.getValue(row, col) || {};
+                oldVal = mergeCellData(newVal, oldVal, styles, !!isOverrideStyle);
+
+                if (Tools.isEmptyObject(oldVal)) {
+                    cellMatrix.realDeleteValue(row, col);
+                } else {
+                    cellMatrix.setValue(row, col, oldVal);
+                }
+            }
+        });
+
+        return true;
+    },
+};
+
+const overwriteCellPropertiesSet = new Set(['f', 'p', 'si', 'custom', 'ref', 'xf']);
+function mergeCellData(newValue: ICellData, oldValue: ICellData, styles: Styles, isOverrideStyle = false) {
+    const type = getCellType(styles, newValue, oldValue);
+    Object.keys(newValue).forEach((key) => {
+        const cellPropertyKey = key as keyof ICellData;
+        if (overwriteCellPropertiesSet.has(cellPropertyKey)) {
+            const propertyValue = newValue[cellPropertyKey];
+            updateCellProperty(oldValue, cellPropertyKey, propertyValue);
+        } else if (cellPropertyKey === 'v') {
+            if (newValue.v !== undefined) {
+                oldValue.v = getCellValue(type, newValue);
+            }
+        } else if (cellPropertyKey === 's') {
+            if (isOverrideStyle) {
+                overrideStyle(styles, oldValue, newValue);
+            } else {
+                handleStyle(styles, oldValue, newValue);
+            }
+        }
+    });
+
+    if (oldValue.v !== undefined) {
+        oldValue.t = type;
+        oldValue.v = getCellValue(type, oldValue);
+    }
+
+    if (oldValue.v === null) {
+        delete oldValue.t;
+        delete oldValue.v;
+    }
+
+    return oldValue;
+}
+
+function overrideStyle(styles: Styles, oldValue: ICellData, newValue: ICellData) {
+    if (newValue.s === undefined) {
+        return;
+    }
+
+    if (newValue.s === null) {
+        delete oldValue.s;
+        return;
+    }
+
+    const styleValue = typeof newValue.s === 'string' ? styles.get(newValue.s) : newValue.s;
+    const styleCell: ICellData = {};
+    handleStyle(styles, styleCell, { s: styleValue });
+
+    if (styleCell.s == null) {
+        delete oldValue.s;
+    } else {
+        oldValue.s = styleCell.s;
+    }
+}
+
+function updateCellProperty<K extends keyof ICellData>(
+    cell: ICellData,
+    key: K,
+    value: ICellData[K]
+): void {
+    if (value === undefined) {
+        // Do nothing if the value is undefined
+    } else if (value === null) {
+        delete cell[key];
+    } else {
+        cell[key] = value;
+    }
+}

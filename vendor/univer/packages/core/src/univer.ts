@@ -1,0 +1,304 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { Theme } from '@univerjs/themes';
+import type { Dependency, IDisposable } from './common/di';
+import type { UnitModel } from './common/unit';
+import type { LogLevel } from './services/log/log.service';
+import type { DependencyOverride } from './services/plugin/plugin-override';
+import type { Plugin, PluginCtor } from './services/plugin/plugin.service';
+import type { ILocales } from './shared';
+import type { LocaleType } from './types/enum/locale-type';
+import { Injector, touchDependencies } from './common/di';
+import { UniverInstanceType } from './common/unit';
+import { DocumentDataModel } from './docs/data-model/document-data-model';
+import { AuthzIoLocalService } from './services/authz-io/authz-io-local.service';
+import { IAuthzIoService } from './services/authz-io/type';
+import { COMMAND_LOG_EXECUTION_CONFIG_KEY, CommandService, ICommandService } from './services/command/command.service';
+import { ConfigService, IConfigService } from './services/config/config.service';
+import { ContextService, IContextService } from './services/context/context.service';
+import { ErrorService } from './services/error/error.service';
+import { IUniverInstanceService, UniverInstanceService } from './services/instance/instance.service';
+import { LifecycleStages } from './services/lifecycle/lifecycle';
+import { LifecycleService } from './services/lifecycle/lifecycle.service';
+import { LocaleService } from './services/locale/locale.service';
+import { DesktopLogService, ILogService } from './services/log/log.service';
+import { MentionIOLocalService } from './services/mention-io/mention-io-local.service';
+import { IMentionIOService } from './services/mention-io/type';
+import { PermissionService } from './services/permission/permission.service';
+import { IPermissionService } from './services/permission/type';
+import { mergeOverrideWithDependencies } from './services/plugin/plugin-override';
+import { PluginService } from './services/plugin/plugin.service';
+import { RegionService } from './services/region/region.service';
+import { ResourceLoaderService } from './services/resource-loader/resource-loader.service';
+import { IResourceLoaderService } from './services/resource-loader/type';
+import { ResourceManagerService } from './services/resource-manager/resource-manager.service';
+import { IResourceManagerService } from './services/resource-manager/type';
+import { ThemeService } from './services/theme/theme.service';
+import {
+    DEFAULT_UNDO_REDO_HISTORY_LIMIT,
+    IUndoRedoService,
+    LocalUndoRedoService,
+    UNDO_REDO_HISTORY_LIMIT_CONFIG_KEY,
+} from './services/undoredo/undoredo.service';
+import { UserManagerService } from './services/user-manager/user-manager.service';
+import { DisposableCollection, toDisposable } from './shared';
+import { Workbook } from './sheets/workbook';
+import { SlideDataModel } from './slides/slide-data-model';
+
+export interface IUniverConfig {
+    /**
+     * The theme of the Univer instance, default using the default theme.
+     */
+    theme?: Theme;
+
+    /**
+     * Whether to use dark mode.
+     * @default false
+     */
+    darkMode?: boolean;
+
+    /**
+     * The locale of the Univer instance.
+     */
+    locale?: LocaleType;
+
+    /**
+     * The region of the Univer instance. It follows locale until explicitly configured.
+     */
+    region?: LocaleType;
+
+    /**
+     * The direction of the Univer instance.
+     * @default 'ltr'
+     */
+    direction?: 'ltr' | 'rtl';
+
+    /**
+     * The locales to be used
+     */
+    locales?: ILocales;
+
+    /**
+     * The log level of the Univer instance.
+     */
+    logLevel?: LogLevel;
+
+    /**
+     * Whether to enable logging for command execution.
+     * @default false
+     */
+    logCommandExecution?: boolean;
+
+    /**
+     * The maximum number of undoable command groups retained for each unit.
+     * Set to `0` to disable undo history.
+     * @default 50
+     */
+    undoRedoHistoryLimit?: number;
+
+    /**
+     * The override dependencies of the Univer instance.
+     */
+    override?: DependencyOverride;
+}
+
+/**
+ * @hideconstructor
+ */
+export class Univer implements IDisposable {
+    private _startedTypes = new Set<UniverInstanceType>();
+    private _injector: Injector;
+
+    private get _univerInstanceService(): IUniverInstanceService {
+        return this._injector.get(IUniverInstanceService);
+    }
+
+    private get _pluginService(): PluginService {
+        return this._injector.get(PluginService);
+    }
+
+    private _disposingCallbacks = new DisposableCollection();
+
+    /**
+     * Create a Univer instance.
+     * @param config Configuration data for Univer
+     * @param parentInjector An optional parent injector of the Univer injector. For more information, see https://redi.wendell.fun/docs/hierarchy.
+     */
+    constructor(config: Partial<IUniverConfig> = {}, parentInjector?: Injector) {
+        const injector = this._injector = createUniverInjector(parentInjector, config?.override);
+
+        const { theme, darkMode, locale, region, locales, direction, logLevel, logCommandExecution, undoRedoHistoryLimit } = config;
+        const configService = this._injector.get(IConfigService);
+        if (theme) this._injector.get(ThemeService).setTheme(theme);
+        if (darkMode) this._injector.get(ThemeService).setDarkMode(darkMode);
+        if (locales) this._injector.get(LocaleService).load(locales);
+        if (locale) this._injector.get(LocaleService).setLocale(locale);
+        if (region) this._injector.get(RegionService).setRegion(region);
+        if (direction) this._injector.get(LocaleService).setDirection(direction);
+        if (logLevel) this._injector.get(ILogService).setLogLevel(logLevel);
+        if (logCommandExecution !== undefined) {
+            configService.setConfig(COMMAND_LOG_EXECUTION_CONFIG_KEY, logCommandExecution);
+        }
+        configService.setConfig(
+            UNDO_REDO_HISTORY_LIMIT_CONFIG_KEY,
+            undoRedoHistoryLimit ?? DEFAULT_UNDO_REDO_HISTORY_LIMIT
+        );
+
+        this._init(injector);
+    }
+
+    /**
+     * @ignore
+     */
+    __getInjector(): Injector {
+        return this._injector;
+    }
+
+    /**
+     * Register a callback function which will be called when this Univer instance is disposing.
+     *
+     * @ignore
+     *
+     * @param callback The callback function.
+     * @returns To remove this callback function from this Univer instance's on disposing list.
+     */
+    onDispose(callback: () => void): IDisposable {
+        const d = this._disposingCallbacks.add(toDisposable(callback));
+        return toDisposable(() => d.dispose(true));
+    }
+
+    dispose(): void {
+        this._disposingCallbacks.dispose();
+        this._injector.dispose();
+    }
+
+    setLocale(locale: LocaleType): void {
+        this._injector.get(LocaleService).setLocale(locale);
+    }
+
+    setRegion(region: LocaleType): void {
+        this._injector.get(RegionService).setRegion(region);
+    }
+
+    createUnit<T, U extends UnitModel>(type: UniverInstanceType, data: Partial<T>): U {
+        return this._univerInstanceService.createUnit(type, data);
+    }
+
+    private _init(injector: Injector): void {
+        this._univerInstanceService.registerCtorForType(UniverInstanceType.UNIVER_SHEET, Workbook);
+        this._univerInstanceService.registerCtorForType(UniverInstanceType.UNIVER_DOC, DocumentDataModel);
+        this._univerInstanceService.registerCtorForType(UniverInstanceType.UNIVER_SLIDE, SlideDataModel);
+
+        const univerInstanceService = injector.get(IUniverInstanceService) as UniverInstanceService;
+        univerInstanceService.__setCreateHandler(
+            (type: UniverInstanceType, data, ctor, options) => {
+                const isFirstTime = !this._startedTypes.has(type);
+                if (isFirstTime) {
+                    this._pluginService.startPluginsForType(type);
+                    this._startedTypes.add(type);
+                }
+
+                const actualCtor = univerInstanceService.__getCtorByType(type) ?? ctor;
+                if (!actualCtor) {
+                    throw new Error(`[Univer]: No constructor registered for unit type ${type}.`);
+                }
+
+                const model = injector.createInstance(actualCtor, data);
+                univerInstanceService.__addUnit(model, options);
+
+                if (isFirstTime) {
+                    this._tryProgressToReady();
+                }
+
+                return model;
+            }
+        );
+    }
+
+    private _tryProgressToReady(): void {
+        const lifecycleService = this._injector.get(LifecycleService);
+        if (lifecycleService.stage < LifecycleStages.Ready) {
+            this._injector.get(LifecycleService).stage = LifecycleStages.Ready;
+        }
+    }
+
+    /** Register a plugin into univer. */
+    registerPlugin<T extends PluginCtor<Plugin>>(plugin: T, config?: ConstructorParameters<T>[0]): void {
+        this._pluginService.registerPlugin(plugin, config);
+    }
+
+    /**
+     * Register multiple plugins into univer.
+     * @param plugins An array of tuples, where each tuple contains a plugin constructor and its optional configuration.
+     */
+    registerPlugins<
+        T extends readonly (
+            | readonly [PluginCtor<Plugin>]
+            | readonly [PluginCtor<Plugin>, unknown]
+        )[]
+    >(
+        plugins: {
+            readonly [K in keyof T]: T[K] extends readonly [infer P]
+                ? P extends PluginCtor<Plugin>
+                    ? readonly [P]
+                    : T[K]
+                : T[K] extends readonly [infer P, unknown]
+                    ? P extends PluginCtor<Plugin>
+                        ? readonly [P, ConstructorParameters<P>[0]?]
+                        : T[K]
+                    : T[K];
+        }
+    ): void {
+        plugins.forEach((item) => {
+            const [plugin, config] = item;
+            this._pluginService.registerPlugin(plugin, config);
+        });
+    }
+}
+
+function createUniverInjector(parentInjector?: Injector, override?: DependencyOverride): Injector {
+    const dependencies: Dependency[] = mergeOverrideWithDependencies([
+        [ErrorService],
+        [LocaleService],
+        [RegionService],
+        [ThemeService],
+        [LifecycleService],
+        [PluginService],
+        [UserManagerService],
+
+        // abstract services
+        [IUniverInstanceService, { useClass: UniverInstanceService }],
+        [IPermissionService, { useClass: PermissionService }],
+        [ILogService, { useClass: DesktopLogService, lazy: true }],
+        [ICommandService, { useClass: CommandService }],
+        [IUndoRedoService, { useClass: LocalUndoRedoService, lazy: true }],
+        [IConfigService, { useClass: ConfigService }],
+        [IContextService, { useClass: ContextService }],
+        [IResourceManagerService, { useClass: ResourceManagerService, lazy: true }],
+        [IResourceLoaderService, { useClass: ResourceLoaderService, lazy: true }],
+        [IAuthzIoService, { useClass: AuthzIoLocalService }],
+        [IMentionIOService, { useClass: MentionIOLocalService, lazy: true }],
+    ], override);
+
+    const injector = parentInjector ? parentInjector.createChild(dependencies) : new Injector(dependencies);
+    touchDependencies(injector, [
+        [UserManagerService],
+        [IResourceLoaderService],
+    ]);
+
+    return injector;
+}

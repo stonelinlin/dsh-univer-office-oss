@@ -1,0 +1,40 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type enUS from './en-US';
+
+const locale: typeof enUS = {
+    'action-recorder': {
+        panel: {
+            recording: 'در حال ضبط...',
+            startRecording: 'شروع ضبط',
+            cancel: 'لغو',
+            close: 'بستن',
+            save: 'ذخیره',
+            start: 'شروع',
+            startWithId: 'شروع (N)',
+        },
+        menu: {
+            title: 'ثبت اقدامات',
+            record: 'ثبت اقدامات...',
+            'replay-local': 'بازپخش محلی ثبت...',
+            'replay-local-name': 'بازپخش محلی ثبت بر اساس نام زیر واحد...',
+            'replay-local-active': 'بازپخش محلی ثبت بر اساس زیر واحد فعلی...',
+        },
+    },
+};
+
+export default locale;

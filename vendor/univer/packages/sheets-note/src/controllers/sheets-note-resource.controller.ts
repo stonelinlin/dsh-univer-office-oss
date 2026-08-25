@@ -1,0 +1,212 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { IMutationInfo, Workbook } from '@univerjs/core';
+import type { ICopySheetCommandParams, IRemoveSheetCommandParams } from '@univerjs/sheets';
+import type { ISheetNote } from '../models/sheets-note.model';
+import { Disposable, generateRandomId, Inject, IResourceManagerService, IUniverInstanceService, UniverInstanceType } from '@univerjs/core';
+import { CopySheetCommand, RemoveSheetCommand, SheetInterceptorService } from '@univerjs/sheets';
+import { RemoveNoteMutation, UpdateNoteMutation } from '../commands/mutations/note.mutation';
+import { PLUGIN_NAME } from '../const';
+import { SheetsNoteModel } from '../models/sheets-note.model';
+
+interface INoteData {
+    [sheetId: string]: {
+        [row: number]: {
+            [col: number]: ISheetNote;
+        };
+    };
+}
+
+export class SheetsNoteResourceController extends Disposable {
+    constructor(
+        @IResourceManagerService private readonly _resourceManagerService: IResourceManagerService,
+        @IUniverInstanceService private readonly _univerInstanceService: IUniverInstanceService,
+        @Inject(SheetInterceptorService) private _sheetInterceptorService: SheetInterceptorService,
+        @Inject(SheetsNoteModel) private readonly _sheetsNoteModel: SheetsNoteModel
+    ) {
+        super();
+        this._initSnapshot();
+        this._initSheetChange();
+    }
+
+    private _initSnapshot() {
+        const toJson = (unitId: string) => {
+            const unitMap = this._sheetsNoteModel.getUnitNotes(unitId);
+            if (!unitMap) {
+                return '';
+            }
+
+            const result: INoteData = {};
+
+            unitMap.forEach((subUnitMap, subUnitId) => {
+                const sheetNotes: INoteData[string] = {};
+
+                subUnitMap.forEach((note) => {
+                    const { row, col } = note;
+                    if (!sheetNotes[row]) {
+                        sheetNotes[row] = {};
+                    }
+                    sheetNotes[row][col] = note;
+                });
+
+                if (Object.keys(sheetNotes).length > 0) {
+                    result[subUnitId] = sheetNotes;
+                }
+            });
+
+            return JSON.stringify(result);
+        };
+
+        const parseJson = (json: string): INoteData => {
+            if (!json) {
+                return {};
+            }
+            try {
+                return JSON.parse(json);
+            } catch {
+                return {};
+            }
+        };
+
+        this.disposeWithMe(
+            this._resourceManagerService.registerPluginResource<INoteData>({
+                pluginName: PLUGIN_NAME,
+                businesses: [UniverInstanceType.UNIVER_SHEET],
+                toJson: (unitId) => toJson(unitId),
+                parseJson: (json) => parseJson(json),
+                onUnLoad: (unitId) => {
+                    // Clear all notes for this unit
+                    this._sheetsNoteModel.deleteUnitNotes(unitId);
+                },
+                onLoad: (unitId, value) => {
+                    // Load notes from the parsed data
+                    Object.entries(value).forEach(([sheetId, sheetNotes]) => {
+                        Object.entries(sheetNotes).forEach(([row, colNotes]) => {
+                            Object.entries(colNotes).forEach(([col, note]) => {
+                                this._sheetsNoteModel.updateNote(
+                                    unitId,
+                                    sheetId,
+                                    Number(row),
+                                    Number(col),
+                                    note
+                                );
+                            });
+                        });
+                    });
+                },
+            })
+        );
+    }
+
+    // eslint-disable-next-line max-lines-per-function
+    private _initSheetChange() {
+        this.disposeWithMe(
+            this._sheetInterceptorService.interceptCommand({
+                // eslint-disable-next-line max-lines-per-function
+                getMutations: (commandInfo) => {
+                    if (commandInfo.id === RemoveSheetCommand.id) {
+                        const params = commandInfo.params as IRemoveSheetCommandParams;
+                        const unitId = params.unitId || this._univerInstanceService.getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET)!.getUnitId();
+                        const subUnitId = params.subUnitId || this._univerInstanceService.getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET)!.getActiveSheet()?.getSheetId();
+
+                        if (!unitId || !subUnitId) {
+                            return { redos: [], undos: [] };
+                        }
+
+                        const sheetNotes = this._sheetsNoteModel.getSheetNotes(unitId, subUnitId);
+
+                        if (!sheetNotes) {
+                            return { redos: [], undos: [] };
+                        }
+
+                        const redos: IMutationInfo[] = [];
+                        const undos: IMutationInfo[] = [];
+
+                        sheetNotes.forEach((note) => {
+                            redos.push({
+                                id: RemoveNoteMutation.id,
+                                params: {
+                                    unitId,
+                                    sheetId: subUnitId,
+                                    noteId: note.id,
+                                    row: note.row,
+                                    col: note.col,
+                                },
+                            });
+                            undos.push({
+                                id: UpdateNoteMutation.id,
+                                params: {
+                                    unitId,
+                                    sheetId: subUnitId,
+                                    row: note.row,
+                                    col: note.col,
+                                    note,
+                                },
+                            });
+                        });
+
+                        return { redos, undos };
+                    } else if (commandInfo.id === CopySheetCommand.id) {
+                        const params = commandInfo.params as ICopySheetCommandParams & { targetSubUnitId: string };
+                        const { unitId, subUnitId, targetSubUnitId } = params;
+
+                        if (!unitId || !subUnitId || !targetSubUnitId) {
+                            return { redos: [], undos: [] };
+                        }
+
+                        const sheetNotes = this._sheetsNoteModel.getSheetNotes(unitId, subUnitId);
+
+                        if (!sheetNotes) {
+                            return { redos: [], undos: [] };
+                        }
+
+                        const redos: IMutationInfo[] = [];
+                        const undos: IMutationInfo[] = [];
+
+                        sheetNotes.forEach((note) => {
+                            const newNote = { ...note, id: generateRandomId(6) }; // Generate new ID for the copied note
+
+                            redos.push({
+                                id: UpdateNoteMutation.id,
+                                params: {
+                                    unitId,
+                                    sheetId: targetSubUnitId,
+                                    row: newNote.row,
+                                    col: newNote.col,
+                                    note: newNote,
+                                },
+                            });
+                            undos.push({
+                                id: RemoveNoteMutation.id,
+                                params: {
+                                    unitId,
+                                    sheetId: targetSubUnitId,
+                                    noteId: newNote.id,
+                                    row: newNote.row,
+                                    col: newNote.col,
+                                },
+                            });
+                        });
+
+                        return { redos, undos };
+                    }
+                    return { redos: [], undos: [] };
+                },
+            })
+        );
+    }
+}

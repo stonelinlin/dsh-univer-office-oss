@@ -1,0 +1,279 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ICellDataForSheetInterceptor, IRange, Workbook } from '@univerjs/core';
+import type { IConditionalFormattingCellData, IConditionalFormattingRenderRangeResolver, IConditionFormattingRule } from '@univerjs/sheets-conditional-formatting';
+import { Disposable, getIntersectRange, Inject, InterceptorEffectEnum, IUniverInstanceService, Rectangle, UniverInstanceType } from '@univerjs/core';
+import { IRenderManagerService } from '@univerjs/engine-render';
+import { INTERCEPTOR_POINT, SheetInterceptorService } from '@univerjs/sheets';
+import {
+    CFRuleType,
+    ConditionalFormattingIcon,
+    ConditionalFormattingRangeIndexModel,
+    ConditionalFormattingRuleModel,
+    ConditionalFormattingService,
+    ConditionalFormattingViewModel,
+    DataBar,
+    dataBarUKey,
+    DEFAULT_PADDING,
+    DEFAULT_WIDTH,
+    IconUKey,
+} from '@univerjs/sheets-conditional-formatting';
+import {
+    SheetSkeletonManagerService,
+} from '@univerjs/sheets-ui';
+import { merge } from 'rxjs';
+import { bufferTime, filter } from 'rxjs/operators';
+
+export class SheetsCfRenderController extends Disposable {
+    /**
+     * When a set operation is triggered multiple times over a short period of time, it may result in some callbacks not being disposed,and caused a render cache exception.
+     * The solution here is to store all the asynchronous tasks and focus on processing after the last callback
+     */
+    private _ruleChangeCacheMap: Map<string, Array<{
+        oldRule: IConditionFormattingRule;
+        rule: IConditionFormattingRule;
+        dispose: () => boolean;
+    }>> = new Map();
+
+    private _boundRenderExtensions = new Map<string, Set<DataBar | ConditionalFormattingIcon>>();
+
+    constructor(
+        @Inject(SheetInterceptorService) private _sheetInterceptorService: SheetInterceptorService,
+        @Inject(ConditionalFormattingService) private _conditionalFormattingService: ConditionalFormattingService,
+        @Inject(IUniverInstanceService) private _univerInstanceService: IUniverInstanceService,
+        @Inject(IRenderManagerService) private _renderManagerService: IRenderManagerService,
+        @Inject(ConditionalFormattingViewModel) private _conditionalFormattingViewModel: ConditionalFormattingViewModel,
+        @Inject(ConditionalFormattingRuleModel) private _conditionalFormattingRuleModel: ConditionalFormattingRuleModel,
+        @Inject(ConditionalFormattingRangeIndexModel) private _conditionalFormattingRangeIndexModel: ConditionalFormattingRangeIndexModel
+    ) {
+        super();
+
+        this._initViewModelInterceptor();
+        this._initRenderRangeResolvers();
+        this._initSkeleton();
+        queueMicrotask(() => this._markActiveSheetRulesDirty());
+        this.disposeWithMe(() => {
+            this._ruleChangeCacheMap.clear();
+            this._boundRenderExtensions.forEach((extensions) => {
+                extensions.forEach((extension) => extension.setRenderRangeResolver(null));
+            });
+            this._boundRenderExtensions.clear();
+        });
+    }
+
+    private _initRenderRangeResolvers() {
+        const dataBarResolver = this._createRenderRangeResolver(CFRuleType.dataBar);
+        const iconResolver = this._createRenderRangeResolver(CFRuleType.iconSet);
+        const bind = (unitId: string) => {
+            this._unbindRenderRangeResolvers(unitId);
+            const mainComponent = this._renderManagerService.getRenderUnitById(unitId)?.mainComponent;
+            if (!mainComponent || !('getExtensionByKey' in mainComponent)) {
+                return;
+            }
+
+            const extensions = new Set<DataBar | ConditionalFormattingIcon>();
+            const dataBar = mainComponent.getExtensionByKey(dataBarUKey);
+            if (dataBar instanceof DataBar) {
+                dataBar.setRenderRangeResolver(dataBarResolver);
+                extensions.add(dataBar);
+            }
+
+            const icon = mainComponent.getExtensionByKey(IconUKey);
+            if (icon instanceof ConditionalFormattingIcon) {
+                icon.setRenderRangeResolver(iconResolver);
+                extensions.add(icon);
+            }
+
+            if (extensions.size) {
+                this._boundRenderExtensions.set(unitId, extensions);
+            }
+        };
+
+        this._renderManagerService.getAllRenderersOfType(UniverInstanceType.UNIVER_SHEET)
+            .forEach((render) => bind(render.unitId));
+        this.disposeWithMe(
+            this._renderManagerService.created$.subscribe((render) => {
+                if (render.type === UniverInstanceType.UNIVER_SHEET) {
+                    bind(render.unitId);
+                }
+            })
+        );
+        this.disposeWithMe(
+            this._renderManagerService.disposed$.subscribe((unitId) => this._unbindRenderRangeResolvers(unitId))
+        );
+    }
+
+    private _createRenderRangeResolver(ruleType: CFRuleType): IConditionalFormattingRenderRangeResolver {
+        return (unitId, subUnitId, ranges) => {
+            const intersections: IRange[] = [];
+            const indexedRules = this._conditionalFormattingRangeIndexModel
+                .getRulesByRanges(unitId, subUnitId, ranges)
+                .filter((rule) => rule.rule.type === ruleType);
+            const matchingRules = indexedRules.length
+                ? indexedRules
+                : (this._conditionalFormattingRuleModel.getSubunitRules(unitId, subUnitId) ?? [])
+                    .filter((rule) => rule.rule.type === ruleType);
+
+            ranges.forEach((range) => {
+                matchingRules.forEach((rule) => {
+                    rule.ranges.forEach((ruleRange) => {
+                        const intersection = getIntersectRange(range, ruleRange);
+                        if (intersection) {
+                            intersections.push(intersection);
+                        }
+                    });
+                });
+            });
+
+            return intersections.length > 1 ? Rectangle.mergeRanges(intersections) : intersections;
+        };
+    }
+
+    private _unbindRenderRangeResolvers(unitId: string) {
+        const extensions = this._boundRenderExtensions.get(unitId);
+        extensions?.forEach((extension) => extension.setRenderRangeResolver(null));
+        this._boundRenderExtensions.delete(unitId);
+    }
+
+    private _collectDirtyRanges(items: Array<{ cfId?: string; rule?: IConditionFormattingRule; subUnitId: string; unitId: string }>, unitId: string, subUnitId: string): IRange[] {
+        const ranges: IRange[] = [];
+
+        items.forEach((item) => {
+            if (item.unitId !== unitId || item.subUnitId !== subUnitId) {
+                return;
+            }
+
+            const rule = item.rule ?? (item.cfId ? this._conditionalFormattingRuleModel.getRule(unitId, subUnitId, item.cfId) : null);
+            if (rule?.ranges?.length) {
+                ranges.push(...rule.ranges);
+            }
+        });
+
+        return ranges;
+    }
+
+    private _intersectDirtyRangesWithRenderedRange(ranges: IRange[], renderedRange?: IRange): IRange[] {
+        if (!renderedRange || renderedRange.startRow < 0 || renderedRange.startColumn < 0) {
+            return [];
+        }
+
+        return ranges.map((range) => ({
+            startRow: Math.max(range.startRow, renderedRange.startRow),
+            endRow: Math.min(range.endRow, renderedRange.endRow),
+            startColumn: Math.max(range.startColumn, renderedRange.startColumn),
+            endColumn: Math.min(range.endColumn, renderedRange.endColumn),
+        })).filter((range) => range.startRow <= range.endRow && range.startColumn <= range.endColumn);
+    }
+
+    private _markDirtySkeleton(items: Array<{ cfId?: string; rule?: IConditionFormattingRule; subUnitId: string; unitId: string }>) {
+        const workbook = this._univerInstanceService.getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET);
+        const worksheet = workbook?.getActiveSheet();
+        if (!workbook || !worksheet) {
+            return;
+        }
+
+        const unitId = workbook.getUnitId();
+        const subUnitId = worksheet.getSheetId();
+        const render = this._renderManagerService.getRenderUnitById(unitId);
+        const skeletonManagerService = render?.with(SheetSkeletonManagerService);
+        const currentSkeleton = skeletonManagerService?.getCurrentSkeleton();
+        const dirtyRanges = this._intersectDirtyRangesWithRenderedRange(
+            this._collectDirtyRanges(items, unitId, subUnitId),
+            currentSkeleton?.rowColumnSegment
+        );
+
+        if (dirtyRanges.length) {
+            currentSkeleton?.resetRangeCache(dirtyRanges);
+        }
+
+        skeletonManagerService?.reCalculate();
+        render?.mainComponent?.makeDirty();
+    }
+
+    private _markActiveSheetRulesDirty() {
+        const workbook = this._univerInstanceService.getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET);
+        const worksheet = workbook?.getActiveSheet();
+        if (!workbook || !worksheet) {
+            return;
+        }
+
+        const unitId = workbook.getUnitId();
+        const subUnitId = worksheet.getSheetId();
+        const rules = this._conditionalFormattingRuleModel.getSubunitRules(unitId, subUnitId) ?? [];
+        if (!rules.length) {
+            return;
+        }
+
+        this._markDirtySkeleton(rules.map((rule) => ({ rule, subUnitId, unitId })));
+    }
+
+    private _initSkeleton() {
+        this.disposeWithMe(merge(this._conditionalFormattingRuleModel.$ruleChange, this._conditionalFormattingViewModel.markDirty$)
+            .pipe(
+                bufferTime(16),
+                filter((v) => !!v.length),
+                filter((v) => {
+                    const workbook = this._univerInstanceService.getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET);
+                    if (!workbook) return false;
+
+                    const worksheet = workbook.getActiveSheet();
+                    if (!worksheet) return false;
+
+                    return v.some((item) => item.unitId === workbook.getUnitId() && item.subUnitId === worksheet.getSheetId());
+                })
+            ).subscribe((items) => this._markDirtySkeleton(items)));
+    }
+
+    private _initViewModelInterceptor() {
+        this.disposeWithMe(this._sheetInterceptorService.intercept(INTERCEPTOR_POINT.CELL_CONTENT, {
+            effect: InterceptorEffectEnum.Style,
+            handler: (cell, context, next) => {
+                const result = this._conditionalFormattingService.composeStyle(context.unitId, context.subUnitId, context.row, context.col);
+                if (!result) {
+                    return next(cell);
+                }
+                const styleMap = context.workbook.getStyles();
+                const defaultStyle = (typeof cell?.s === 'string' ? styleMap.get(cell?.s) : cell?.s) || {};
+                const cloneCell = (cell === context.rawData ? { ...context.rawData } : cell) as IConditionalFormattingCellData & ICellDataForSheetInterceptor;
+                if (result.style) {
+                    const activeStyle = {
+                        ...defaultStyle,
+                        ...result.style,
+                    };
+                    Object.assign(cloneCell, { s: activeStyle });
+                }
+
+                if (!cloneCell.fontRenderExtension) {
+                    cloneCell.fontRenderExtension = {};
+                    if (result.isShowValue !== undefined) {
+                        cloneCell.fontRenderExtension.isSkip = !result.isShowValue;
+                    }
+                }
+                if (result.dataBar) {
+                    cloneCell.dataBar = result.dataBar;
+                }
+                if (result.iconSet) {
+                    cloneCell.iconSet = result.iconSet;
+                    cloneCell.fontRenderExtension.leftOffset = DEFAULT_PADDING + DEFAULT_WIDTH;
+                }
+
+                return next(cloneCell);
+            },
+            priority: 10,
+        }));
+    }
+}

@@ -1,0 +1,95 @@
+import type { Rule } from 'eslint';
+import path from 'node:path';
+
+function getImportSourceValue(node: Rule.Node): string | null {
+    if (!('source' in node)) {
+        return null;
+    }
+
+    const source = (node as { source?: { value?: unknown } }).source;
+    if (!source || typeof source.value !== 'string') {
+        return null;
+    }
+
+    return source.value;
+}
+
+function getRuleFilename(context: Rule.RuleContext): string {
+    const filenameFromProperty = (context as { filename?: unknown }).filename;
+
+    if (typeof filenameFromProperty === 'string' && filenameFromProperty) {
+        return filenameFromProperty;
+    }
+
+    const getFilename = (context as { getFilename?: () => string }).getFilename;
+    return typeof getFilename === 'function' ? getFilename.call(context) : '';
+}
+
+const rule: Rule.RuleModule = {
+    meta: {
+        type: 'problem',
+        docs: {
+            description: 'Disallow self package imports in packages directory except facade',
+        },
+        messages: {
+            noSelfImport: 'Package cannot import itself: "{{importPath}}" in {{packageName}}',
+        },
+    },
+
+    create(context) {
+        const filename = getRuleFilename(context);
+        const normalizedPath = filename.split(path.sep).join('/');
+
+        const isInPackages = normalizedPath.includes('/packages/');
+        const isInFacade = normalizedPath.includes('/facade/');
+
+        if (!isInPackages || isInFacade) {
+            return {};
+        }
+
+        // get parent dir
+        const parentDirMatch = normalizedPath.match(/\/([^/]+)\/packages\//);
+        if (!parentDirMatch) {
+            return {};
+        }
+
+        const parentDir = parentDirMatch[1];
+        const packagePrefix = parentDir === 'univer'
+            ? '@univerjs/' :
+            parentDir === 'univer-pro'
+                ? '@univerjs-pro/' :
+                null;
+
+        if (!packagePrefix) {
+            return {};
+        }
+
+        // get package name
+        const packageMatch = normalizedPath.match(/\/packages\/([^/]+)/);
+        if (!packageMatch) {
+            return {};
+        }
+
+        const packageName = packageMatch[1];
+        const possiblePackageName = `${packagePrefix}${packageName}`;
+
+        return {
+            ImportDeclaration(node: Rule.Node) {
+                const importPath = getImportSourceValue(node);
+
+                if (importPath && importPath === possiblePackageName) {
+                    context.report({
+                        node,
+                        messageId: 'noSelfImport',
+                        data: {
+                            importPath,
+                            packageName: importPath,
+                        },
+                    });
+                }
+            },
+        };
+    },
+};
+
+export default rule;

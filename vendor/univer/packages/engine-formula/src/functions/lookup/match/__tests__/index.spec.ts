@@ -1,0 +1,229 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { ErrorType } from '../../../../basics/error-type';
+import { ArrayValueObject, transformToValueObject } from '../../../../engine/value-object/array-value-object';
+import { BooleanValueObject, NullValueObject, NumberValueObject, StringValueObject } from '../../../../engine/value-object/primitive-object';
+import { FUNCTION_NAMES_LOOKUP } from '../../function-names';
+import { Match } from '../index';
+
+describe('Test match', () => {
+    const testFunction = new Match(FUNCTION_NAMES_LOOKUP.MATCH);
+
+    describe('The value of the match', () => {
+        it('LookupArray asc, default matchType', async () => {
+            const lookupValue = NumberValueObject.create(5);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [2, 3, 6, 7],
+                ]),
+                rowCount: 1,
+                columnCount: 4,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray);
+            expect(resultObject.getValue()).toBe(2);
+        });
+
+        it('treats an empty third argument as exact match', async () => {
+            const lookupValue = BooleanValueObject.create(true);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [false, false, false],
+                ]),
+                rowCount: 1,
+                columnCount: 3,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+
+            const emptyThirdArgument = NullValueObject.create();
+            const exactResult = testFunction.calculate(lookupValue, lookupArray, emptyThirdArgument);
+            const omittedResult = testFunction.calculate(lookupValue, lookupArray);
+
+            expect(exactResult.getValue()).toBe(ErrorType.NA);
+            expect(omittedResult.getValue()).toBe(3);
+        });
+
+        it('LookupArray asc, matchType is 1', async () => {
+            const lookupValue = NumberValueObject.create(5);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [2, 3, 6, 7],
+                ]),
+                rowCount: 1,
+                columnCount: 4,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(1);
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+            expect(resultObject.getValue()).toBe(2);
+        });
+        it('LookupArray desc, matchType is 1', async () => {
+            const lookupValue = NumberValueObject.create(5);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [7, 6, 3, 2],
+                ]),
+                rowCount: 1,
+                columnCount: 4,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(1);
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+
+            // FIXME: fix this test
+            // expect(resultObject.getValue()).toBe(ErrorType.NA);
+        });
+
+        it('LookupArray asc, matchType is 0', async () => {
+            const lookupValue = NumberValueObject.create(5);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [2, 3, 6, 7],
+                ]),
+                rowCount: 1,
+                columnCount: 4,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(0);
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+            expect(resultObject.getValue()).toBe(ErrorType.NA);
+        });
+
+        it('uses strict numeric equality for exact match', async () => {
+            const lookupValue = NumberValueObject.create(5530.857777777778);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [5530.857777777777, 5530.857777777777, 5530.857777777778],
+                ]),
+                rowCount: 1,
+                columnCount: 3,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(0);
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+            expect(resultObject.getValue()).toBe(3);
+        });
+
+        it('LookupArray asc, matchType is -1', async () => {
+            const lookupValue = NumberValueObject.create(5);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [2, 3, 6, 7],
+                ]),
+                rowCount: 1,
+                columnCount: 4,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(-1);
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+
+             // FIXME: fix this test
+            // expect(resultObject.getValue()).toBe(ErrorType.NA);
+        });
+        it('LookupArray desc, matchType is -1', async () => {
+            const lookupValue = NumberValueObject.create(5);
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [7, 6, 3, 2],
+                ]),
+                rowCount: 1,
+                columnCount: 4,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(-1);
+
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+
+            expect(resultObject.getValue()).toBe(2);
+        });
+
+        it('LookupArray has blank cell', async () => {
+            const lookupValue = NullValueObject.create();
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [1, 2, 3, null, 4, 5],
+                ]),
+                rowCount: 1,
+                columnCount: 6,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(0);
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+            expect(resultObject.getValue()).toBe(ErrorType.NA);
+
+            const lookupValue2 = StringValueObject.create('');
+            const resultObject2 = testFunction.calculate(lookupValue2, lookupArray, matchType);
+            expect(resultObject2.getValue()).toBe(ErrorType.NA);
+
+            const lookupValue3 = NumberValueObject.create(0); ;
+            const resultObject3 = testFunction.calculate(lookupValue3, lookupArray, matchType);
+            expect(resultObject3.getValue()).toBe(ErrorType.NA);
+        });
+
+        it('lookupValue is blank cell', async () => {
+            const lookupValue = NullValueObject.create();
+            const lookupArray = ArrayValueObject.create({
+                calculateValueList: transformToValueObject([
+                    [1, 2, 3, 0, 4, 5],
+                ]),
+                rowCount: 1,
+                columnCount: 6,
+                unitId: '',
+                sheetId: '',
+                row: 0,
+                column: 0,
+            });
+            const matchType = NumberValueObject.create(0);
+            const resultObject = testFunction.calculate(lookupValue, lookupArray, matchType);
+            expect(resultObject.getValue()).toBe(4);
+        });
+    });
+});

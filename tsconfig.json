@@ -11,8 +11,32 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
-    "skipLibCheck": true
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "skipLibCheck": true,
+    "paths": {
+      "@superdoc/document-api": ["./vendor/superdoc-document-api/dist/index.d.ts"],
+      "@univerjs/*": ["./src/types/univer-oss.d.ts"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/client/**", "src/workers/unit-content/**", "src/gateway-app/**", "src/render-machine/**", "src/viewer-app/**", "src/viewer-support/**"]
+  "exclude": [
+    "src/client/**",
+    "src/workers/**",
+    "src/gateway-app/**",
+    "src/render-machine/**",
+    "src/viewer-app/**",
+    "src/viewer-support/**",
+    "src/oss-viewer/**",
+    "src/host/adapters/**",
+    "src/host/artifacts/**",
+    "src/host/processes/**",
+    "src/host/provider/gateway-univer-service.ts",
+    "src/host/provider/render-operations.ts",
+    "src/host/provider/render-source-operations.ts",
+    "src/host/provider/resource-operations.ts",
+    "src/host/provider/state-cache.ts",
+    "src/host/provider/unit-content-operations.ts",
+    "src/host/provider/worktree-operations.ts"
+  ]
 }

@@ -1,0 +1,51 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type enUS from './en-US';
+
+const locale: typeof enUS = {
+    ARRAY_CONSTRAIN: {
+        description: 'Задает размер массива, в который будут помещены результаты.',
+        abstract: 'Задает размер массива, в который будут помещены результаты.',
+        links: [
+            {
+                title: 'Инструкция',
+                url: 'https://support.google.com/docs/answer/3267036?hl=ru',
+            },
+        ],
+        functionParameter: {
+            inputRange: { name: 'массив', detail: 'ARRAY_CONSTRAIN(SORT(A1:F100, 1, TRUE), 10, 6)' },
+            numRows: { name: 'количество строк', detail: 'Количество строк, которое должен содержать результат.' },
+            numCols: { name: 'количество столбцов', detail: 'Количество столбцов, которое должен содержать результат.' },
+        },
+    },
+    FLATTEN: {
+        description: 'Объединяет все значения из одного или нескольких диапазонов в один столбец.',
+        abstract: 'Объединяет все значения из одного или нескольких диапазонов в один столбец.',
+        links: [
+            {
+                title: 'Инструкция',
+                url: 'https://support.google.com/docs/answer/10307761?hl=ru',
+            },
+        ],
+        functionParameter: {
+            range1: { name: 'диапазон1', detail: 'Первый диапазон, который необходимо выровнять.' },
+            range2: { name: 'диапазон2', detail: 'При необходимости можно добавлять другие диапазоны. Дополнительные диапазоны, которые необходимо выровнять.' },
+        },
+    },
+};
+
+export default locale;

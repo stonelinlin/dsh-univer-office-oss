@@ -1,0 +1,22 @@
+{
+    "$schema": "https://turbo.build/schema.json",
+    "tasks": {
+        "test": {
+        },
+
+        "coverage": {
+            "outputs": ["coverage/**"],
+            "env": ["CI"]
+        },
+
+        "build": {
+            "outputs": ["lib/**"]
+        },
+
+        "build:e2e": {
+            "outputs": ["local/**"]
+        },
+
+        "typecheck": {}
+    }
+}

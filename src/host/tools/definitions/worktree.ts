@@ -3,7 +3,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { worktreeId } from '../../service/identifiers.ts'
 import { UniverError } from '../../service/errors.ts'
 import { operationOutput, operationTitle } from '../presentation.ts'
-import { stripGatewaySuccessEnvelope } from '../normalize.ts'
 import { existingToolFile } from '../workspace.ts'
 
 /** Create the agent-safe `univer_worktree` tool definition. */
@@ -22,22 +21,22 @@ export function worktreeTool(ctx: Context, timeoutMs: number) {
     async execute(args, exec) {
       const target = await existingToolFile(exec, args.file)
       if (args.action === 'create') {
-        return stripGatewaySuccessEnvelope(await ctx.univer.worktree({
+        return await ctx.univer.worktree({
           action: 'create',
           workspace: target.workspace,
           file: target.path,
           ...args.name === undefined ? {} : { name: args.name },
-        }, exec.signal))
+        }, exec.signal)
       }
       if (args.worktreeId === undefined || args.worktreeId.length === 0) {
         throw new UniverError(`univer_worktree ${args.action} requires worktreeId.`, 'INVALID_REQUEST')
       }
-      return stripGatewaySuccessEnvelope(await ctx.univer.worktree({
+      return await ctx.univer.worktree({
         action: args.action,
         workspace: target.workspace,
         file: target.path,
         worktreeId: worktreeId(args.worktreeId),
-      }, exec.signal))
+      }, exec.signal)
     },
     presentCall: (args) => ({ card: 'generic', title: operationTitle(`worktree ${args.action}`, args.file), kind: 'execute' }),
   })

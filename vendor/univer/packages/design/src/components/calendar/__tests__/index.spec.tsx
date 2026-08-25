@@ -1,0 +1,143 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { cleanup, fireEvent, render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import enUS from '../../../locale/en-US';
+import { ConfigProvider } from '../../config-provider/ConfigProvider';
+import { Calendar } from '../Calendar';
+import '@testing-library/jest-dom/vitest';
+
+afterEach(cleanup);
+
+describe('Calendar', () => {
+    const onChange = vi.fn();
+
+    beforeEach(() => {
+        onChange.mockClear();
+    });
+
+    function renderCalendar(props = {}) {
+        const date = new Date(2023, 7, 15);
+        return render(
+            <ConfigProvider mountContainer={null} locale={{ Calendar: enUS.design.Calendar }}>
+                <Calendar value={date} onValueChange={onChange} {...props} />
+            </ConfigProvider>
+        );
+    }
+
+    it('should render calendar with correct year, month and day', () => {
+        const { getByText } = renderCalendar();
+        expect(getByText('2023')).toBeInTheDocument();
+        // August
+        expect(getByText(enUS.design.Calendar.months[7])).toBeInTheDocument();
+        // 15th
+        expect(getByText('15')).toBeInTheDocument();
+    });
+
+    it('should call onValueChange when a day is clicked', () => {
+        const { getByText } = renderCalendar();
+        getByText('20').click();
+        expect(onChange).toHaveBeenCalled();
+        const calledDate = onChange.mock.calls[0][0];
+        expect(calledDate.getFullYear()).toBe(2023);
+        expect(calledDate.getMonth()).toBe(7);
+        expect(calledDate.getDate()).toBe(20);
+    });
+
+    it('should show TimeInput when showTime is true', () => {
+        const { container } = renderCalendar({ showTime: true });
+        expect(container.querySelector('[data-u-comp="time-input"]')).toBeInTheDocument();
+    });
+
+    it('should switch year when navigating across month boundaries', () => {
+        const date = new Date(2023, 0, 15);
+        const { getByLabelText, getByText } = render(
+            <ConfigProvider mountContainer={null} locale={{ Calendar: enUS.design.Calendar }}>
+                <Calendar value={date} onValueChange={onChange} />
+            </ConfigProvider>
+        );
+
+        fireEvent.click(getByLabelText(enUS.design.Calendar.ariaLabels.previousMonth));
+        expect(getByText('2022')).toBeInTheDocument();
+
+        fireEvent.click(getByLabelText(enUS.design.Calendar.ariaLabels.nextMonth));
+        expect(getByText('2023')).toBeInTheDocument();
+    });
+
+    it('should select a month from the month menu without changing value immediately', () => {
+        const { getByLabelText, getByRole, getByText } = renderCalendar();
+
+        fireEvent.pointerDown(getByLabelText(enUS.design.Calendar.ariaLabels.selectMonth));
+        fireEvent.click(getByRole('menuitemradio', { name: enUS.design.Calendar.months[10] }));
+
+        expect(getByText(enUS.design.Calendar.months[10])).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+
+        fireEvent.click(getByText('20'));
+
+        expect(onChange).toHaveBeenCalledTimes(1);
+        const calledDate = onChange.mock.calls[0][0];
+        expect(calledDate.getFullYear()).toBe(2023);
+        expect(calledDate.getMonth()).toBe(10);
+        expect(calledDate.getDate()).toBe(20);
+    });
+
+    it('should select a year from the year menu without changing value immediately', () => {
+        const { getByLabelText, getByText } = renderCalendar();
+
+        fireEvent.click(getByLabelText(enUS.design.Calendar.ariaLabels.selectYear));
+        fireEvent.click(getByText('2030'));
+
+        expect(getByText('2030')).toBeInTheDocument();
+        expect(onChange).not.toHaveBeenCalled();
+
+        fireEvent.click(getByText('20'));
+
+        expect(onChange).toHaveBeenCalledTimes(1);
+        const calledDate = onChange.mock.calls[0][0];
+        expect(calledDate.getFullYear()).toBe(2030);
+        expect(calledDate.getMonth()).toBe(7);
+        expect(calledDate.getDate()).toBe(20);
+    });
+
+    it('should limit selectable years by min and max', () => {
+        const min = new Date(2022, 0, 1);
+        const max = new Date(2024, 11, 31);
+        const { getByLabelText, queryByText } = renderCalendar({ min, max });
+
+        fireEvent.click(getByLabelText(enUS.design.Calendar.ariaLabels.selectYear));
+
+        expect(queryByText('2021')).not.toBeInTheDocument();
+        expect(queryByText('2022')).toBeInTheDocument();
+        expect(queryByText('2024')).toBeInTheDocument();
+        expect(queryByText('2025')).not.toBeInTheDocument();
+    });
+
+    it('should disable out-of-range days and propagate time changes', () => {
+        const min = new Date(2023, 7, 10, 0, 0, 0);
+        const max = new Date(2023, 7, 20, 23, 59, 59);
+        const { getByText, container } = renderCalendar({ min, max, showTime: true });
+
+        const outOfRangeDay = getByText('9').closest('button') as HTMLButtonElement;
+        expect(outOfRangeDay).toBeDisabled();
+        fireEvent.click(outOfRangeDay);
+
+        const timeInput = container.querySelector('input[type="time"]') as HTMLInputElement;
+        fireEvent.change(timeInput, { target: { value: '11:22:33' } });
+        expect(onChange).toHaveBeenCalled();
+    });
+});

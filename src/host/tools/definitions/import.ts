@@ -3,7 +3,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { UniverError } from '../../service/errors.ts'
 import { worktreeId } from '../../service/identifiers.ts'
 import { operationOutput, operationTitle } from '../presentation.ts'
-import { stripGatewaySuccessEnvelope } from '../normalize.ts'
 import { existingToolFile, existingToolPath } from '../workspace.ts'
 
 /** Create the `univer_import` tool definition. */
@@ -27,14 +26,14 @@ export function importTool(ctx: Context, timeoutMs: number) {
         existingToolFile(exec, args.file),
         existingToolPath(exec, args.source),
       ])
-      return stripGatewaySuccessEnvelope(await ctx.univer.importUnitContent({
+      return await ctx.univer.importUnitContent({
         workspace: target.workspace,
         file: target.path,
         sourceWorkspace: source.workspace,
         source: source.path,
         worktreeId: worktreeId(args.worktreeId),
         name: args.name,
-      }, exec.signal))
+      }, exec.signal)
     },
     presentCall: (args) => ({ card: 'generic', title: operationTitle('import', args.file), kind: 'execute' }),
   })

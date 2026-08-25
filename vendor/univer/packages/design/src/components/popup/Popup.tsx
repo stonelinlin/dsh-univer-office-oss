@@ -1,0 +1,151 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ReactElement } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { clsx } from '../../helper/clsx';
+import { ConfigContext } from '../config-provider/ConfigProvider';
+
+const POPUP_POINTER_OFFSET = 2;
+const DEFAULT_POPUP_OFFSET: [number, number] = [0, 0];
+const HIDDEN_POPUP_OFFSET: [number, number] = [-9999, -9999];
+
+export interface IPopupProps {
+    children: ReactElement;
+
+    /**
+     * whether popup is visible
+     * @default false
+     */
+    visible?: boolean;
+
+    /**
+     * the offset of popup
+     * @default [0, 0]
+     */
+    offset?: [number, number];
+
+    /**
+     * allow popup content to overflow parent bounds.
+     * @default false
+     */
+    overflowVisible?: boolean;
+
+    /**
+     * vertical placement relative to `offset[1]`
+     * @default 'below'
+     */
+    placementY?: 'below' | 'above';
+}
+
+export function Popup(props: IPopupProps) {
+    const { children, visible = false, offset = DEFAULT_POPUP_OFFSET, overflowVisible = false, placementY = 'below' } = props;
+
+    const nodeRef = useRef(null);
+
+    const [realOffset, setRealOffset] = useState<[number, number]>(HIDDEN_POPUP_OFFSET);
+
+    const { mountContainer, direction } = useContext(ConfigContext);
+
+    const calculateOffset = (): [number, number] | null => {
+        const element = nodeRef.current;
+        if (!element) {
+            return null;
+        }
+
+        const [left, top] = offset;
+        const { clientWidth, clientHeight } = element;
+        const { innerWidth, innerHeight } = window;
+        const maxX = Math.max(0, innerWidth - clientWidth - POPUP_POINTER_OFFSET);
+        const maxY = Math.max(0, innerHeight - clientHeight - POPUP_POINTER_OFFSET);
+        const x = Math.min(Math.max(left, 0), maxX);
+        const topWithPlacement = placementY === 'above'
+            ? top - clientHeight
+            : top;
+        const y = Math.min(Math.max(topWithPlacement, 0), maxY);
+
+        return [x, y];
+    };
+
+    useLayoutEffect(() => {
+        if (!visible) {
+            setRealOffset(HIDDEN_POPUP_OFFSET);
+            return;
+        }
+
+        const nextOffset = calculateOffset();
+        if (nextOffset) {
+            setRealOffset(nextOffset);
+        }
+    }, [offset, placementY, visible]);
+
+    useEffect(() => {
+        if (!visible) {
+            return;
+        }
+
+        const handleResize = () => {
+            const nextOffset = calculateOffset();
+            if (nextOffset) {
+                setRealOffset(nextOffset);
+            }
+        };
+
+        window.addEventListener('resize', handleResize);
+        return () => {
+            window.removeEventListener('resize', handleResize);
+        };
+    }, [offset, placementY, visible]);
+
+    function preventDefault(event: React.MouseEvent) {
+        event.preventDefault();
+    }
+
+    return createPortal(
+        <section
+            ref={nodeRef}
+            dir={direction}
+            className={clsx(
+                `
+                  univer-popup univer-fixed univer-z-[1070] univer-origin-top-left univer-overflow-hidden
+                  univer-rounded-md univer-shadow univer-transition-[transform,opacity] univer-duration-150
+                `,
+                visible
+                    ? `
+                      univer-[transition-timing-function:cubic-bezier(0.08,0.82,0.17,1)] univer-scale-y-100
+                      univer-opacity-100
+                    `
+                    : `
+                      univer-[transition-timing-function:cubic-bezier(0.6,0.04,0.98,0.34)] univer-scale-y-0
+                      univer-opacity-0
+                    `
+            )}
+            style={{
+                // Fix #1089. If the popup does not have this 2px offset, the pointerup event's target would
+                // become the popup itself not the canvas element, hence the selection gesture is not terminated.
+                // It should be considered as debt of the rendering engine.
+                left: realOffset[0] + POPUP_POINTER_OFFSET,
+                top: realOffset[1] + POPUP_POINTER_OFFSET,
+                overflow: overflowVisible ? 'visible' : undefined,
+            }}
+            onContextMenu={preventDefault}
+        >
+            {children}
+        </section>,
+        mountContainer!
+    );
+}

@@ -8,14 +8,16 @@ import * as webServer from './webServer/plugin.ts'
 
 export { Config, resolveConfig } from './config.ts'
 export type { UniverConfig }
-export { GatewayUniverService } from './provider/gateway-univer-service.ts'
+export { LocalUniverService } from './provider/local-univer-service.ts'
 export { UniverService } from './service/univer-service.ts'
 export { createUniverRouter } from './webServer/router.ts'
+export { createUnit } from '../local/model.ts'
+export { executeWithOssUniver } from '../local/oss-runtime.ts'
 export * from '../shared/wire/actions.ts'
 export * from '../shared/wire/state.ts'
 export * from '../shared/wire/status.ts'
 
-export const name = 'dsh-univer-office'
+export const name = 'dsh-univer-office-oss'
 
 /** Compose the Univer Provider and its Web/Tools Consumers. */
 export function apply(ctx: Context, config: UniverConfig = {}): void {

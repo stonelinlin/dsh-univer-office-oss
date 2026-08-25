@@ -1,0 +1,116 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { Dependency, ICommand } from '@univerjs/core';
+import type { IUniverDocsConfig } from './config/config';
+import {
+    ICommandService,
+    IConfigService,
+    Inject,
+    Injector,
+    merge,
+    Plugin,
+} from '@univerjs/core';
+import pkg from '../package.json';
+import { DeleteTextCommand, InsertTextCommand, UpdateTextCommand } from './commands/commands/core-editing.command';
+import { CreateHeaderFooterCommand } from './commands/commands/create-header-footer.command';
+import { SetDocumentDefaultParagraphStyleCommand } from './commands/commands/set-document-default-paragraph-style.command';
+import { SetDocumentNameCommand } from './commands/commands/set-document-name.command';
+import { SetSectionHeaderFooterLinkCommand } from './commands/commands/set-section-header-footer-link.command';
+import { UpdateDocumentParagraphStyleCommand } from './commands/commands/update-document-paragraph-style.command';
+import { DeleteDocumentSectionBreakCommand, InsertDocumentColumnBreakCommand, InsertDocumentSectionBreakCommand, UpdateDocumentSectionCommand } from './commands/commands/update-document-section.command';
+import { RichTextEditingMutation } from './commands/mutations/core-editing.mutation';
+import { DocsRenameMutation } from './commands/mutations/docs-rename.mutation';
+import { SetTextSelectionsOperation } from './commands/operations/text-selection.operation';
+import { defaultPluginConfig, DOCS_PLUGIN_CONFIG_KEY } from './config/config';
+import { DocCustomRangeController } from './controllers/custom-range.controller';
+import { DocBlockMoveValidatorService } from './services/doc-block-move-validator.service';
+import { DocContentInsertService } from './services/doc-content-insert.service';
+import { DocSelectionManagerService } from './services/doc-selection-manager.service';
+import { DocStateChangeManagerService } from './services/doc-state-change-manager.service';
+import { DocStateEmitService } from './services/doc-state-emit.service';
+import { DocTextResolverService } from './services/doc-text-resolver.service';
+
+export class UniverDocsPlugin extends Plugin {
+    static override pluginName = 'DOCS_PLUGIN';
+    static override packageName = pkg.name;
+    static override version = pkg.version;
+    // static override type = UniverInstanceType.UNIVER_DOC;
+
+    constructor(
+        private readonly _config: Partial<IUniverDocsConfig> = defaultPluginConfig,
+        @Inject(Injector) override _injector: Injector,
+        @IConfigService private readonly _configService: IConfigService
+    ) {
+        super();
+
+        // Manage the plugin configuration.
+        const { ...rest } = merge(
+            {},
+            defaultPluginConfig,
+            this._config
+        );
+        this._configService.setConfig(DOCS_PLUGIN_CONFIG_KEY, rest);
+    }
+
+    override onStarting(): void {
+        this._initializeDependencies();
+        this._initializeCommands();
+    }
+
+    private _initializeCommands(): void {
+        (
+            [
+                InsertTextCommand,
+                DeleteTextCommand,
+                UpdateTextCommand,
+                CreateHeaderFooterCommand,
+                SetDocumentDefaultParagraphStyleCommand,
+                SetDocumentNameCommand,
+                SetSectionHeaderFooterLinkCommand,
+                UpdateDocumentParagraphStyleCommand,
+                UpdateDocumentSectionCommand,
+                InsertDocumentSectionBreakCommand,
+                InsertDocumentColumnBreakCommand,
+                DeleteDocumentSectionBreakCommand,
+                RichTextEditingMutation,
+                DocsRenameMutation,
+                SetTextSelectionsOperation,
+            ] as ICommand[]
+        ).forEach((command) => {
+            this._injector.get(ICommandService).registerCommand(command);
+        });
+    }
+
+    private _initializeDependencies() {
+        (
+            [
+                [DocSelectionManagerService],
+                [DocStateEmitService],
+                [DocStateChangeManagerService],
+                [DocBlockMoveValidatorService],
+                [DocContentInsertService],
+                [DocTextResolverService],
+                [DocCustomRangeController],
+            ] as Dependency[]
+        ).forEach((d) => this._injector.add(d));
+    }
+
+    override onReady(): void {
+        this._injector.get(DocStateChangeManagerService);
+        this._injector.get(DocCustomRangeController);
+    }
+}

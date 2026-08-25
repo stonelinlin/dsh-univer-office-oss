@@ -1,0 +1,425 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { IDrawingParam, Nullable } from '@univerjs/core';
+import type { IChangeObserverConfig, Scene } from '@univerjs/engine-render';
+import type { LocaleKey } from '../../locale/types';
+import { debounce, LocaleService } from '@univerjs/core';
+import { Checkbox, clsx, InputNumber } from '@univerjs/design';
+import { IDrawingManagerService } from '@univerjs/drawing';
+import { IRenderManagerService } from '@univerjs/engine-render';
+import { useDependency } from '@univerjs/ui';
+import { useEffect, useState } from 'react';
+import { MIN_DRAWING_HEIGHT_LIMIT, MIN_DRAWING_WIDTH_LIMIT, RANGE_DRAWING_ROTATION_LIMIT } from '../../utils/config';
+import { getUpdateParams } from '../../utils/get-update-params';
+import { resolveDrawingUIRotateEnabled } from '../../utils/rotate-enabled';
+import { createDrawingTransformRotationChangeHandler, isDrawingTransformRotationDisabled } from './drawing-transform-rotation';
+
+export interface IDrawingTransformProps {
+    transformShow: boolean;
+    drawings: IDrawingParam[];
+}
+
+const INPUT_DEBOUNCE_TIME = 300;
+
+export const DrawingTransform = (props: IDrawingTransformProps) => {
+    const renderManagerService = useDependency(IRenderManagerService);
+    const drawingParam = props.drawings[0];
+    const scene = drawingParam ? renderManagerService.getRenderUnitById(drawingParam.unitId)?.scene : undefined;
+    const topScene = scene?.getEngine()?.activeScene as Nullable<Scene>;
+
+    if (!drawingParam?.transform || !scene || !topScene) {
+        return null;
+    }
+
+    return <DrawingTransformContent {...props} />;
+};
+
+function DrawingTransformContent(props: IDrawingTransformProps) {
+    const localeService = useDependency(LocaleService);
+    const drawingManagerService = useDependency(IDrawingManagerService);
+    const renderManagerService = useDependency(IRenderManagerService);
+
+    const { drawings, transformShow } = props;
+
+    const drawingParam = drawings[0]!;
+    const transform = drawingParam.transform!;
+
+    const { unitId, subUnitId, drawingId, drawingType } = drawingParam;
+
+    const renderObject = renderManagerService.getRenderUnitById(unitId);
+    const scene = renderObject!.scene!;
+    const topScene = scene.getEngine()!.activeScene as Scene;
+
+    const transformer = scene.getTransformerByCreate();
+
+    const {
+        width: originWidth = 0,
+        height: originHeight = 0,
+        left: originX = 0,
+        top: originY = 0,
+        angle: originRotation = 0,
+    } = transform;
+
+    const [width, setWidth] = useState<number>(originWidth);
+    const [height, setHeight] = useState(originHeight);
+    const [xPosition, setXPosition] = useState(originX);
+    const [yPosition, setYPosition] = useState(originY);
+    const [rotation, setRotation] = useState(originRotation);
+    const [lockRatio, setLockRatio] = useState(transformer.keepRatio);
+    const rotateEnabled = resolveDrawingUIRotateEnabled(drawingParam, {
+        getChildren: (drawing) => drawingManagerService.getDrawingsByGroup(drawing),
+    });
+    const rotationDisabled = isDrawingTransformRotationDisabled(rotateEnabled);
+
+    const checkMoveBoundary = (left: number, top: number, width: number, height: number) => {
+        const { width: topSceneWidth, height: topSceneHeight } = topScene;
+        const { ancestorLeft, ancestorTop } = scene;
+
+        let limitLeft = left;
+        let limitTop = top;
+        let limitWidth = width;
+        let limitHeight = height;
+
+        if (left + ancestorLeft < 0) {
+            limitLeft = -ancestorLeft;
+        }
+
+        if (top + ancestorTop < 0) {
+            limitTop = -ancestorTop;
+        }
+
+        limitWidth = topSceneWidth - limitLeft - ancestorLeft;
+
+        if (limitWidth < MIN_DRAWING_WIDTH_LIMIT) {
+            limitWidth = MIN_DRAWING_WIDTH_LIMIT;
+        }
+
+        limitHeight = topSceneHeight - limitTop - ancestorTop;
+
+        if (limitHeight < MIN_DRAWING_HEIGHT_LIMIT) {
+            limitHeight = MIN_DRAWING_HEIGHT_LIMIT;
+        }
+
+        if (left + limitWidth + ancestorLeft > topSceneWidth) {
+            limitLeft = topSceneWidth - width - ancestorLeft;
+        }
+
+        if (top + limitHeight + ancestorTop > topSceneHeight) {
+            limitTop = topSceneHeight - height - ancestorTop;
+        }
+
+        return {
+            limitLeft,
+            limitTop,
+            limitWidth,
+            limitHeight,
+        };
+    };
+
+    const changeObs = (state: IChangeObserverConfig) => {
+        const { objects } = state;
+        const params = getUpdateParams(objects, drawingManagerService);
+
+        if (params.length !== 1) {
+            return;
+        }
+
+        const drawingParam = params[0];
+
+        if (drawingParam == null) {
+            return;
+        }
+
+        const { transform } = drawingParam;
+
+        if (transform == null) {
+            return;
+        }
+
+        const {
+            width: originWidth,
+            height: originHeight,
+            left: originX,
+            top: originY,
+            angle: originRotation,
+        } = transform;
+
+        if (originWidth != null) {
+            setWidth(originWidth);
+        }
+
+        if (originHeight != null) {
+            setHeight(originHeight);
+        }
+
+        if (originX != null) {
+            setXPosition(originX);
+        }
+
+        if (originY != null) {
+            setYPosition(originY);
+        }
+
+        if (originRotation != null) {
+            setRotation(originRotation);
+        }
+    };
+
+    useEffect(() => {
+        const subscriptions = [
+            transformer.changeStart$.subscribe((state) => {
+                changeObs(state);
+            }),
+            transformer.changing$.subscribe((state) => {
+                changeObs(state);
+            }),
+            transformer.changeEnd$.subscribe((state) => {
+                changeObs(state);
+            }),
+            drawingManagerService.focus$.subscribe((drawings) => {
+                if (drawings.length !== 1) {
+                    return;
+                }
+
+                const drawingParam = drawingManagerService.getDrawingByParam(drawings[0]);
+
+                if (drawingParam == null) {
+                    return;
+                }
+
+                const transform = drawingParam.transform;
+
+                if (transform == null) {
+                    return;
+                }
+
+                const {
+                    width: originWidth,
+                    height: originHeight,
+                    left: originX,
+                    top: originY,
+                    angle: originRotation,
+                } = transform;
+
+                if (originWidth != null) {
+                    setWidth(originWidth);
+                }
+
+                if (originHeight != null) {
+                    setHeight(originHeight);
+                }
+
+                if (originX != null) {
+                    setXPosition(originX);
+                }
+
+                if (originY != null) {
+                    setYPosition(originY);
+                }
+
+                if (originRotation != null) {
+                    setRotation(originRotation);
+                }
+            }),
+        ];
+
+        return () => {
+            subscriptions.forEach((sub) => sub.unsubscribe());
+        };
+    }, []);
+
+    const handleWidthChange = debounce((val: number | null) => {
+        if (val == null) {
+            return;
+        }
+
+        const { limitWidth, limitHeight } = checkMoveBoundary(xPosition, yPosition, val, height);
+
+        val = Math.min(val, limitWidth);
+
+        const updateParam: IDrawingParam = { unitId, subUnitId, drawingId, drawingType, transform: { width: val } };
+
+        if (lockRatio) {
+            let heightFix = (val / width) * height;
+            heightFix = Math.max(heightFix, MIN_DRAWING_HEIGHT_LIMIT);
+            if (heightFix > limitHeight) {
+                return;
+            }
+            setHeight(heightFix);
+            updateParam.transform!.height = heightFix;
+        }
+
+        setWidth(val);
+
+        drawingManagerService.featurePluginUpdateNotification([updateParam]);
+
+        transformer.refreshControls().changeNotification();
+    }, INPUT_DEBOUNCE_TIME);
+
+    const handleHeightChange = debounce((val: number | null) => {
+        if (val == null) {
+            return;
+        }
+
+        const { limitHeight, limitWidth } = checkMoveBoundary(xPosition, yPosition, width, val);
+
+        val = Math.min(val, limitHeight);
+
+        const updateParam: IDrawingParam = { unitId, subUnitId, drawingId, drawingType, transform: { height: val } };
+
+        if (lockRatio) {
+            let widthFix = (val / height) * width;
+            widthFix = Math.max(widthFix, MIN_DRAWING_WIDTH_LIMIT);
+            if (widthFix > limitWidth) {
+                return;
+            }
+            setWidth(widthFix);
+            updateParam.transform!.width = widthFix;
+        }
+
+        setHeight(val);
+
+        drawingManagerService.featurePluginUpdateNotification([updateParam]);
+
+        transformer.refreshControls().changeNotification();
+    }, INPUT_DEBOUNCE_TIME);
+
+    const handleXChange = debounce((val: number | null) => {
+        if (val == null) {
+            return;
+        }
+
+        const { limitLeft } = checkMoveBoundary(val, yPosition, width, height);
+
+        val = limitLeft;
+
+        const updateParam: IDrawingParam = { unitId, subUnitId, drawingId, drawingType, transform: { left: val } };
+
+        setXPosition(val);
+
+        drawingManagerService.featurePluginUpdateNotification([updateParam]);
+
+        transformer.refreshControls().changeNotification();
+    }, INPUT_DEBOUNCE_TIME);
+
+    const handleYChange = debounce((val: number | null) => {
+        if (val == null) {
+            return;
+        }
+
+        const { limitTop } = checkMoveBoundary(xPosition, val, width, height);
+
+        val = limitTop;
+
+        const updateParam: IDrawingParam = { unitId, subUnitId, drawingId, drawingType, transform: { top: val } };
+
+        setYPosition(val);
+
+        drawingManagerService.featurePluginUpdateNotification([updateParam]);
+
+        transformer.refreshControls().changeNotification();
+    }, INPUT_DEBOUNCE_TIME);
+
+    const handleRotationChange = createDrawingTransformRotationChangeHandler({
+        rotateEnabled,
+        drawingParam: { unitId, subUnitId, drawingId, drawingType },
+        setRotation,
+        emitUpdate: (updateParams) => drawingManagerService.featurePluginUpdateNotification(updateParams),
+        notifyChange: () => transformer.refreshControls().changeNotification(),
+    });
+
+    const handleLockRatioChange = (val: string | number | boolean) => {
+        setLockRatio(val as boolean);
+        transformer.keepRatio = val as boolean;
+    };
+
+    return (
+        <div
+            className={clsx('univer-grid univer-gap-2 univer-py-2 univer-text-gray-400', {
+                'univer-hidden': !transformShow,
+            })}
+        >
+            <header
+                className={`
+                  univer-text-gray-600
+                  dark:!univer-text-gray-200
+                `}
+            >
+                <div>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.title')}</div>
+            </header>
+
+            <div
+                className={`
+                  univer-grid univer-grid-cols-3 univer-gap-2
+                  [&>div]:univer-grid [&>div]:univer-gap-2
+                `}
+            >
+                <div>
+                    <span>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.width')}</span>
+                    <InputNumber
+                        precision={1}
+                        value={width}
+                        min={MIN_DRAWING_WIDTH_LIMIT}
+                        onChange={(val) => { handleWidthChange(val); }}
+                    />
+                </div>
+                <div>
+                    <span>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.height')}</span>
+                    <InputNumber
+                        precision={1}
+                        value={height}
+                        min={MIN_DRAWING_HEIGHT_LIMIT}
+                        onChange={(val) => { handleHeightChange(val); }}
+                    />
+                </div>
+                <div>
+                    <span>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.lock')}</span>
+                    <div className="univer-text-center">
+                        <Checkbox checked={lockRatio} onChange={handleLockRatioChange} />
+                    </div>
+                </div>
+            </div>
+
+            <div
+                className={`
+                  univer-grid univer-grid-cols-3 univer-gap-2
+                  [&>div]:univer-grid [&>div]:univer-gap-2
+                `}
+            >
+                <div>
+                    <span>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.x')}</span>
+                    <InputNumber precision={1} value={xPosition} onChange={(val) => { handleXChange(val); }} />
+                </div>
+                <div>
+                    <span>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.y')}</span>
+                    <InputNumber precision={1} value={yPosition} onChange={(val) => { handleYChange(val); }} />
+                </div>
+                <div>
+                    <span>{localeService.t<LocaleKey>('drawing-ui.image-panel.transform.rotate')}</span>
+                    <InputNumber
+                        precision={1}
+                        value={rotation}
+                        min={RANGE_DRAWING_ROTATION_LIMIT[0]}
+                        max={RANGE_DRAWING_ROTATION_LIMIT[1]}
+                        disabled={rotationDisabled}
+                        onChange={handleRotationChange}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}

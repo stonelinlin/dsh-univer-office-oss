@@ -1,0 +1,50 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { Nullable } from '@univerjs/core';
+import { Disposable, Inject } from '@univerjs/core';
+import { IFormulaCurrentConfigService } from '../../services/current-data.service';
+import { IDefinedNamesService } from '../../services/defined-names.service';
+import { IFunctionService } from '../../services/function.service';
+import { LexerTreeBuilder } from './lexer-tree-builder';
+
+export class Lexer extends Disposable {
+    constructor(
+        @IDefinedNamesService private readonly _definedNamesService: IDefinedNamesService,
+        @Inject(LexerTreeBuilder) private readonly _lexerTreeBuilder: LexerTreeBuilder,
+        @IFormulaCurrentConfigService private readonly _formulaCurrentConfigService: IFormulaCurrentConfigService,
+        @IFunctionService private readonly _functionService: IFunctionService
+    ) {
+        super();
+    }
+
+    treeBuilder(formulaString: string, transformSuffix = true, unitId?: Nullable<string>, refOffsetX = 0, refOffsetY = 0) {
+        if (this._definedNamesService.getAllDefinedNamesIsEmpty()) {
+            return this._lexerTreeBuilder.treeBuilder(formulaString, transformSuffix);
+        }
+
+        return this._lexerTreeBuilder.treeBuilder(formulaString, transformSuffix, {
+            unitId: unitId ?? this._formulaCurrentConfigService.getExecuteUnitId(),
+            sheetId: this._formulaCurrentConfigService.getExecuteSubUnitId(),
+            refOffsetX,
+            refOffsetY,
+            hasFunction: this._functionService.hasExecutor.bind(this._functionService),
+            getValueByName: this._definedNamesService.getValueByName.bind(this._definedNamesService),
+            getDirtyDefinedNameMap: this._formulaCurrentConfigService.getDirtyDefinedNameMap.bind(this._formulaCurrentConfigService),
+            getSheetName: this._formulaCurrentConfigService.getSheetName.bind(this._formulaCurrentConfigService),
+        });
+    }
+}

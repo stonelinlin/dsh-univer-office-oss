@@ -1,0 +1,478 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ICustomRangeForInterceptor, IParagraph, IParagraphStyle, Nullable } from '@univerjs/core';
+import type { IDocumentSkeletonGlyph } from '../../../../../basics/i-document-skeleton-cached';
+import type { ISectionBreakConfig } from '../../../../../basics/interfaces';
+import type { DataStreamTreeNode } from '../../../view-model/data-stream-tree-node';
+import type { DocumentViewModel } from '../../../view-model/document-view-model';
+import type { IBreakPoints } from '../../line-breaker/line-breaker';
+import type { ILayoutContext } from '../../tools';
+import { BooleanNumber, DataStreamTreeTokenType, GridType, PositionedObjectLayoutType } from '@univerjs/core';
+import { cjk } from '../../../../../basics/cjk-regexp';
+import { GlyphType } from '../../../../../basics/i-document-skeleton-cached';
+import {
+    hasArabic,
+    hasThai,
+    hasTibetan,
+    startWithEmoji,
+} from '../../../../../basics/tools';
+import { getDocsCustomBlockRenderViewport } from '../../../custom-block-render-viewport';
+import { Lang } from '../../hyphenation/lang';
+import { LineBreaker } from '../../line-breaker';
+import { BreakPointType } from '../../line-breaker/break';
+import { LineBreakerHyphenEnhancer } from '../../line-breaker/enhancers/hyphen-enhancer';
+import { LineBreakerLinkEnhancer } from '../../line-breaker/enhancers/link-enhancer';
+import { LineBreakerWholeEntityEnhancer } from '../../line-breaker/enhancers/whole-entity-enhancer';
+import { customBlockLineBreakExtension } from '../../line-breaker/extensions/custom-block-linebreak-extension';
+import { eastAsianQuoteLineBreakExtension } from '../../line-breaker/extensions/east-asian-quote-linebreak-extension';
+import { tabLineBreakExtension } from '../../line-breaker/extensions/tab-linebreak-extension';
+import {
+    createSkeletonCustomBlockGlyph,
+    createSkeletonLetterGlyph,
+    createSkeletonTabGlyph,
+    createSkeletonWholeEntityGlyph,
+    glyphShrinkLeft,
+    glyphShrinkRight,
+} from '../../model/glyph';
+import { getBoundingBox } from '../../model/line';
+import {
+    getCharSpaceApply,
+    getCustomRangeGlyphMetrics,
+    getCustomRangeGlyphMetricsFromRange,
+    getFontCreateConfig,
+    isMeasuredWholeEntityRange,
+} from '../../tools';
+import { ArabicHandler, emojiHandler, otherHandler, ThaiHandler, TibetanHandler } from './language-ruler';
+
+// Now we apply consecutive punctuation adjustment, specified in Chinese Layout
+// Requirements, section 3.1.6.1 Punctuation Adjustment Space, and Japanese Layout
+// Requirements, section 3.1 Line Composition Rules for Punctuation Marks
+function punctuationSpaceAdjustment(shapedGlyphs: IDocumentSkeletonGlyph[]) {
+    const len = shapedGlyphs.length;
+    for (let i = 0; i < len - 1; i++) {
+        const curGlyph = shapedGlyphs[i];
+        const nextGlyph = shapedGlyphs[i + 1];
+        const { width, content } = curGlyph;
+        const delta = width / 2;
+
+        if (
+            cjk.hasCJKPunctuation(content) &&
+            cjk.hasCJKPunctuation(nextGlyph.content) &&
+            curGlyph.adjustability.shrinkability[1] + nextGlyph.adjustability.shrinkability[0] >= delta
+        ) {
+            const leftDelta = Math.min(curGlyph.adjustability.shrinkability[1], delta);
+
+            glyphShrinkRight(curGlyph, leftDelta);
+            glyphShrinkLeft(nextGlyph, delta - leftDelta);
+        }
+    }
+}
+
+// Add some spacing between Han characters and western characters.
+// See Requirements for Chinese Text Layout, Section 3.2.2 Mixed Text Composition in Horizontal
+// Written Mode
+function addCJKLatinSpacing(shapedTextList: IShapedText[]) {
+    const shapedGlyphs = shapedTextList.flatMap((shapedText) => shapedText.glyphs);
+    let prevGlyph = null;
+    const len = shapedGlyphs.length;
+    const LATIN_REG = /[a-z\d]/i;
+
+    for (let i = 0; i < len; i++) {
+        const curGlyph = shapedGlyphs[i];
+        const nextGlyph = i < len - 1 ? shapedGlyphs[i + 1] : null;
+        const { width } = curGlyph;
+
+        // Case 1: CJ followed by a Latin character.
+        if (cjk.hasCJKText(curGlyph.content) && nextGlyph && LATIN_REG.test(nextGlyph.content)) {
+            curGlyph.width += width / 4;
+            curGlyph.adjustability.shrinkability[1] += width / 8;
+        }
+
+        // Case 2: Latin followed by a CJ character.
+        if (cjk.hasCJKText(curGlyph.content) && prevGlyph && LATIN_REG.test(prevGlyph.content)) {
+            curGlyph.width += width / 4;
+            curGlyph.xOffset += width / 4;
+            curGlyph.adjustability.shrinkability[0] += width / 8;
+        }
+
+        prevGlyph = curGlyph;
+    }
+}
+
+function hyphenConfig(paragraphStyle: IParagraphStyle, sectionBreakConfig: ISectionBreakConfig) {
+    const { suppressHyphenation = BooleanNumber.FALSE } = paragraphStyle;
+    const { autoHyphenation = BooleanNumber.FALSE } = sectionBreakConfig;
+
+    return suppressHyphenation === BooleanNumber.FALSE && autoHyphenation === BooleanNumber.TRUE;
+}
+
+export interface IShapedText {
+    text: string;
+    glyphs: IDocumentSkeletonGlyph[];
+    breakPointType: BreakPointType;
+}
+
+function collectMeasuredWholeEntityRanges(
+    content: string,
+    viewModel: DocumentViewModel,
+    paragraphNode: DataStreamTreeNode
+): ICustomRangeForInterceptor[] {
+    const ranges: ICustomRangeForInterceptor[] = [];
+    const contentStartIndex = paragraphNode.startIndex;
+    const contentEndIndex = contentStartIndex + content.length - 1;
+    const customRanges = viewModel.getBody()?.customRanges ?? [];
+
+    for (const customRange of customRanges) {
+        if (
+            !customRange.wholeEntity ||
+            customRange.startIndex < contentStartIndex ||
+            customRange.endIndex < customRange.startIndex ||
+            customRange.endIndex > contentEndIndex
+        ) {
+            continue;
+        }
+
+        const interceptedRange = viewModel.getCustomRange(customRange.startIndex);
+        if (
+            interceptedRange?.rangeId === customRange.rangeId &&
+            interceptedRange.startIndex === customRange.startIndex &&
+            interceptedRange.endIndex === customRange.endIndex &&
+            isMeasuredWholeEntityRange(interceptedRange)
+        ) {
+            ranges.push(interceptedRange);
+        }
+    }
+
+    return ranges.sort((a, b) => a.startIndex - b.startIndex);
+}
+
+function createMeasuredWholeEntityGlyph(
+    content: string,
+    range: ICustomRangeForInterceptor,
+    viewModel: DocumentViewModel,
+    paragraphNode: DataStreamTreeNode,
+    sectionBreakConfig: ISectionBreakConfig,
+    paragraph: IParagraph
+): IDocumentSkeletonGlyph | undefined {
+    const relativeStartIndex = range.startIndex - paragraphNode.startIndex;
+    const relativeEndIndex = range.endIndex - paragraphNode.startIndex + 1;
+    const raw = content.slice(relativeStartIndex, relativeEndIndex);
+    const config = getFontCreateConfig(relativeStartIndex, viewModel, paragraphNode, sectionBreakConfig, paragraph);
+    const metrics = getCustomRangeGlyphMetricsFromRange(range, config);
+
+    if (!raw || !metrics) {
+        return undefined;
+    }
+
+    return createSkeletonWholeEntityGlyph(raw, config, metrics);
+}
+
+function getShapedGlyphText(glyph: IDocumentSkeletonGlyph): string {
+    if (
+        glyph.glyphType === GlyphType.PLACEHOLDER &&
+        glyph.streamType === DataStreamTreeTokenType.LETTER &&
+        glyph.raw !== glyph.content
+    ) {
+        return glyph.raw;
+    }
+
+    return glyph.content;
+}
+
+export function shaping(
+    ctx: ILayoutContext,
+    content: string,
+    viewModel: DocumentViewModel,
+    paragraphNode: DataStreamTreeNode,
+    sectionBreakConfig: ISectionBreakConfig
+): IShapedText[] {
+    const {
+        gridType = GridType.LINES,
+        charSpace = 0,
+        defaultTabStop = 10.5,
+        drawings = {},
+    } = sectionBreakConfig;
+    const shapedTextList: IShapedText[] = [];
+    const lineBreaker = new LineBreaker(content);
+    const { endIndex } = paragraphNode;
+    const paragraph = viewModel.getParagraph(endIndex) || { startIndex: 0, paragraphId: 'para_render_fallback' };
+    const { paragraphStyle = {} } = paragraph;
+    const { snapToGrid = BooleanNumber.TRUE } = paragraphStyle;
+    const measuredWholeEntityRanges = collectMeasuredWholeEntityRanges(content, viewModel, paragraphNode);
+    const measuredWholeEntityRangeByStart = new Map(measuredWholeEntityRanges.map((range) => [
+        range.startIndex - paragraphNode.startIndex,
+        range,
+    ]));
+    const measuredWholeEntityRangeStarts = measuredWholeEntityRanges.map(
+        (range) => range.startIndex - paragraphNode.startIndex
+    );
+    let measuredWholeEntityRangeIndex = 0;
+    let last = 0;
+    let bk;
+
+    const { hyphen, languageDetector } = ctx;
+
+    // Add custom extension for linebreak.
+    tabLineBreakExtension(lineBreaker);
+    customBlockLineBreakExtension(lineBreaker);
+    if (cjk.hasCJKText(content)) {
+        eastAsianQuoteLineBreakExtension(lineBreaker);
+    }
+
+    let breaker: IBreakPoints = new LineBreakerLinkEnhancer(lineBreaker);
+
+    const lang = languageDetector.detect(content);
+
+    const needHyphen = hyphenConfig(paragraphStyle, sectionBreakConfig);
+    const doNotHyphenateCaps = sectionBreakConfig.doNotHyphenateCaps === BooleanNumber.TRUE;
+
+    if (lang !== Lang.UNKNOWN && needHyphen) {
+        // Use hyphen enhancer when the lang pattern is loaded.
+        if (hyphen.hasPattern(lang)) {
+            breaker = new LineBreakerHyphenEnhancer(breaker, hyphen, lang, doNotHyphenateCaps);
+        } else {
+            hyphen.loadPattern(lang);
+        }
+    }
+    breaker = new LineBreakerWholeEntityEnhancer(
+        breaker,
+        measuredWholeEntityRanges,
+        paragraphNode.startIndex
+    );
+
+    // eslint-disable-next-line no-cond-assign
+    while ((bk = breaker.nextBreakPoint())) {
+        // get the string between the last break and this one
+        const word = content.slice(last, bk.position);
+        const shapedGlyphs: IDocumentSkeletonGlyph[] = [];
+
+        let src = word;
+        let i = last;
+        while (src.length > 0) {
+            while (
+                measuredWholeEntityRangeIndex < measuredWholeEntityRangeStarts.length &&
+                measuredWholeEntityRangeStarts[measuredWholeEntityRangeIndex] < i
+            ) {
+                measuredWholeEntityRangeIndex++;
+            }
+
+            const char = src.match(/^[\s\S]/gu)?.[0];
+
+            if (char == null) {
+                break;
+            }
+
+            const measuredRange = measuredWholeEntityRangeByStart.get(i);
+            if (measuredRange) {
+                const glyph = createMeasuredWholeEntityGlyph(
+                    content,
+                    measuredRange,
+                    viewModel,
+                    paragraphNode,
+                    sectionBreakConfig,
+                    paragraph
+                );
+                if (glyph) {
+                    shapedGlyphs.push(glyph);
+                    const count = measuredRange.endIndex - measuredRange.startIndex + 1;
+                    i += count;
+                    src = src.substring(count);
+                    measuredWholeEntityRangeIndex++;
+                    continue;
+                }
+                measuredWholeEntityRangeIndex++;
+            }
+
+            if (char === DataStreamTreeTokenType.CUSTOM_BLOCK) {
+                const config = getFontCreateConfig(i, viewModel, paragraphNode, sectionBreakConfig, paragraph);
+                let newGlyph: Nullable<IDocumentSkeletonGlyph> = null;
+                const customBlock = viewModel.getCustomBlockWithoutSetCurrentIndex(paragraphNode.startIndex + i);
+
+                if (customBlock != null) {
+                    const { blockId } = customBlock;
+                    const drawingOrigin = drawings[blockId];
+                    if (drawingOrigin?.layoutType === PositionedObjectLayoutType.INLINE) {
+                        const { angle } = drawingOrigin.docTransform;
+                        const { width = 0, height = 0 } = drawingOrigin.docTransform.size;
+                        const top = 0;
+                        const left = 0;
+                        const boundingBox = getBoundingBox(angle, left, width, top, height);
+                        const viewport = getDocsCustomBlockRenderViewport(
+                            viewModel.getDataModel().getUnitId?.() ?? '',
+                            drawingOrigin.drawingId,
+                            {
+                                fallbackHeight: boundingBox.height ?? 0,
+                                fallbackWidth: boundingBox.width ?? 0,
+                            }
+                        );
+
+                        newGlyph = createSkeletonCustomBlockGlyph(
+                            config,
+                            viewport?.layoutWidth ?? viewport?.width ?? boundingBox.width,
+                            viewport?.height ?? boundingBox.height,
+                            drawingOrigin.drawingId
+                        );
+                    } else if (drawingOrigin != null) {
+                        newGlyph = createSkeletonCustomBlockGlyph(config, 0, 0, drawingOrigin.drawingId);
+                    }
+                }
+
+                if (newGlyph == null) {
+                    newGlyph = createSkeletonLetterGlyph(char, config);
+                }
+
+                shapedGlyphs.push(newGlyph);
+                i += char.length;
+                src = src.substring(char.length);
+            } else if (/\s/.test(char) || cjk.hasCJK(char)) {
+                const config = getFontCreateConfig(i, viewModel, paragraphNode, sectionBreakConfig, paragraph);
+                let newGlyph: Nullable<IDocumentSkeletonGlyph> = null;
+
+                if (char === DataStreamTreeTokenType.TAB) {
+                    const charSpaceApply = getCharSpaceApply(charSpace, defaultTabStop, gridType, snapToGrid);
+                    newGlyph = createSkeletonTabGlyph(config, charSpaceApply);
+                } else if (char === DataStreamTreeTokenType.PARAGRAPH) {
+                    const zeroWidthParagraphBreak = sectionBreakConfig.renderConfig?.zeroWidthParagraphBreak;
+
+                    if (zeroWidthParagraphBreak === BooleanNumber.TRUE) {
+                        newGlyph = createSkeletonLetterGlyph(char, config, 0);
+                    } else {
+                        newGlyph = createSkeletonLetterGlyph(
+                            char,
+                            config,
+                            getCustomRangeGlyphMetrics(i, viewModel, paragraphNode, config)
+                        );
+                    }
+                } else {
+                    newGlyph = createSkeletonLetterGlyph(char, config);
+                }
+
+                shapedGlyphs.push(newGlyph);
+                i += char.length;
+                src = src.substring(char.length);
+            } else if (startWithEmoji(src)) {
+                const { step, glyphGroup } = emojiHandler(
+                    i,
+                    src,
+                    viewModel,
+                    paragraphNode,
+                    sectionBreakConfig,
+                    paragraph
+                );
+                shapedGlyphs.push(...glyphGroup);
+                i += step;
+
+                src = src.substring(step);
+            } else if (hasArabic(char)) {
+                const { step, glyphGroup } = ArabicHandler(
+                    i,
+                    src,
+                    viewModel,
+                    paragraphNode,
+                    sectionBreakConfig,
+                    paragraph
+                );
+                shapedGlyphs.push(...glyphGroup);
+                i += step;
+
+                src = src.substring(step);
+            } else if (hasTibetan(char)) {
+                const { step, glyphGroup } = TibetanHandler(
+                    i,
+                    src,
+                    viewModel,
+                    paragraphNode,
+                    sectionBreakConfig,
+                    paragraph
+                );
+                shapedGlyphs.push(...glyphGroup);
+                i += step;
+
+                src = src.substring(step);
+            } else if (hasThai(char)) {
+                const { step, glyphGroup } = ThaiHandler(
+                    i,
+                    src,
+                    viewModel,
+                    paragraphNode,
+                    sectionBreakConfig,
+                    paragraph
+                );
+                shapedGlyphs.push(...glyphGroup);
+                i += step;
+
+                src = src.substring(step);
+            } else {
+                const nextMeasuredRangeStart = measuredWholeEntityRangeStarts[measuredWholeEntityRangeIndex];
+                const sourceBeforeMeasuredRange = nextMeasuredRangeStart == null
+                    ? src
+                    : src.slice(0, nextMeasuredRangeStart - i);
+                const { step, glyphGroup } = otherHandler(
+                    i,
+                    sourceBeforeMeasuredRange,
+                    viewModel,
+                    paragraphNode,
+                    sectionBreakConfig,
+                    paragraph
+                );
+                shapedGlyphs.push(...glyphGroup);
+                i += step;
+
+                src = src.substring(step);
+            }
+        }
+
+        // Continuous punctuation space adjustment.
+        punctuationSpaceAdjustment(shapedGlyphs);
+
+        const shapedGlyphsList: IDocumentSkeletonGlyph[][] = [[]];
+
+        for (let i = 0; i < shapedGlyphs.length; i++) {
+            const lastList = shapedGlyphsList[shapedGlyphsList.length - 1];
+            const glyph = shapedGlyphs[i];
+
+            // Inline Custom Block can open a new line.
+            if (glyph.streamType === DataStreamTreeTokenType.CUSTOM_BLOCK && glyph.width !== 0) {
+                if (lastList.length === 0) {
+                    shapedGlyphsList.pop();
+                }
+                shapedGlyphsList.push([glyph]);
+            } else {
+                lastList.push(glyph);
+            }
+        }
+
+        const lastShapedGlyphs = shapedGlyphsList[shapedGlyphsList.length - 1];
+
+        for (const shapedGlyphs of shapedGlyphsList) {
+            const word = shapedGlyphs.map(getShapedGlyphText).join('');
+
+            shapedTextList.push({
+                text: word,
+                glyphs: shapedGlyphs,
+                breakPointType: shapedGlyphs === lastShapedGlyphs ? bk.type : BreakPointType.Normal,
+            });
+        }
+
+        last = bk.position;
+    }
+
+    // Add some spacing between Han characters and western characters.
+    addCJKLatinSpacing(shapedTextList);
+
+    return shapedTextList;
+}

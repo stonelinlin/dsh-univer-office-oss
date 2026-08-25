@@ -1,0 +1,635 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ISrcRect, Nullable } from '@univerjs/core';
+import type { IObjectFullState, ITransformChangeState, IViewportInfo } from '../basics';
+import type { UniverRenderingContext } from '../context';
+import type { Scene } from '../scene';
+import type { IShapeProps } from './shape';
+import { ObjectType } from '../base-object';
+import { RENDER_CLASS_TYPE, Transform, Vector2 } from '../basics';
+import { offsetRotationAxis } from '../basics/offset-rotation-axis';
+import { Shape } from './shape';
+
+const INLINE_SVG_DATA_URL_PATTERN = /^data:image\/svg\+xml(?:;[^,]*)?,/i;
+const SVG_FILTER_REFERENCE_PATTERN = /\bfilter\s*=/i;
+const SVG_EXPENSIVE_FILTER_PATTERN = /<fe(?:Turbulence|DisplacementMap|GaussianBlur)\b/i;
+const SVG_ANIMATION_PATTERN = /<(?:animate(?:Color|Motion|Transform)?|set)\b|@keyframes\b/i;
+const RASTER_CACHE_MAX_PIXEL_COUNT = 4_000_000;
+const RASTER_CACHE_MAX_DIMENSION = 4_096;
+const RASTER_CACHE_PIXEL_RATIO_STEP = 0.5;
+
+function shouldRasterCacheSvg(source?: string): boolean {
+    const prefix = source && INLINE_SVG_DATA_URL_PATTERN.exec(source)?.[0];
+    if (!prefix) {
+        return false;
+    }
+
+    try {
+        const payload = source.slice(prefix.length);
+        const svg = prefix.toLowerCase().includes(';base64,') ? atob(payload) : decodeURIComponent(payload);
+        return !SVG_ANIMATION_PATTERN.test(svg) &&
+            SVG_FILTER_REFERENCE_PATTERN.test(svg) &&
+            SVG_EXPENSIVE_FILTER_PATTERN.test(svg);
+    } catch {
+        return false;
+    }
+}
+
+function resolveRasterCachePixelRatio(width: number, height: number, requestedPixelRatio: number): number {
+    if (width <= 0 || height <= 0) {
+        return requestedPixelRatio;
+    }
+
+    const dimensionPixelRatioLimit = Math.min(
+        RASTER_CACHE_MAX_DIMENSION / width,
+        RASTER_CACHE_MAX_DIMENSION / height
+    );
+    const pixelLimitedPixelRatio = Math.sqrt(RASTER_CACHE_MAX_PIXEL_COUNT / (width * height));
+    const pixelRatioLimit = Math.min(dimensionPixelRatioLimit, pixelLimitedPixelRatio);
+    const pixelRatio = requestedPixelRatio + RASTER_CACHE_PIXEL_RATIO_STEP > pixelRatioLimit
+        ? pixelRatioLimit
+        : requestedPixelRatio;
+    if (pixelRatio < pixelLimitedPixelRatio) {
+        return pixelRatio;
+    }
+
+    const physicalWidth = Math.floor(width * pixelLimitedPixelRatio);
+    const physicalHeight = Math.floor(RASTER_CACHE_MAX_PIXEL_COUNT / physicalWidth);
+    return Math.min(pixelRatio, (physicalWidth - 1) / width, (physicalHeight - 1) / height);
+}
+
+export interface IShapeClipBounds {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}
+
+export interface IImageShapeClipService {
+    /**
+     * Build the shape outline path and clip the canvas context.
+     * Assumes the coordinate system has (0,0) at the top-left of the shape area.
+     * The method calls ctx.beginPath(), builds the shape path, and calls ctx.clip().
+     * @returns The actual bounding rect of the clip region, or false if no clip was built.
+     *          For multi-path shapes the bounds may extend beyond (0, 0, width, height).
+     */
+    applyShapeClip(ctx: UniverRenderingContext, prstGeom: string, width: number, height: number, adjustValues?: Nullable<Record<string, number>>): IShapeClipBounds | false;
+}
+
+export interface IImageProps extends IShapeProps {
+    image?: HTMLImageElement;
+    url?: string;
+    success?: () => void;
+    fail?: () => void;
+    /**
+     * 20.1.8.55 srcRect (Source Rectangle)
+     */
+    srcRect?: Nullable<ISrcRect>;
+
+    /**
+     * 20.1.9.18 prstGeom (Preset geometry)
+     */
+    prstGeom?: Nullable<string>;
+
+    /**
+     * Adjust values for the preset geometry (e.g. corner radius for roundRect).
+     * Keys are adjust handle names, values are numeric values.
+     */
+    adjustValues?: Nullable<Record<string, number>>;
+
+    opacity?: number;
+
+    clipBounds?: Nullable<IShapeClipBounds>;
+}
+
+export class Image extends Shape<IImageProps> {
+    protected _props: IImageProps;
+
+    protected _native: Nullable<HTMLImageElement>;
+
+    private _renderByCropper: boolean = false;
+
+    private _transformCalculateSrcRect: boolean = true;
+
+    private _clipService: Nullable<IImageShapeClipService> = null;
+
+    private _rasterCacheSource = '';
+
+    private _autoRasterCache = false;
+
+    override objectType = ObjectType.IMAGE;
+
+    override isDrawingObject: boolean = true;
+
+    constructor(id: string, config: IImageProps) {
+        super(id, config);
+        this._props = {
+            ...config,
+        };
+
+        if (config.image) {
+            this._native = config.image;
+            this.makeDirty(true);
+        } else if (config.url) {
+            this._native = document.createElement('img');
+            this._native.crossOrigin = 'anonymous';
+            this._native.onload = () => {
+                config.success?.();
+                this.makeDirty(true);
+                (this.getEngine()?.activeScene as Scene)?.onFileLoaded$.emitEvent(id);
+            };
+            this._native.onerror = () => {
+                if (config.fail) {
+                    config.fail();
+                } else {
+                    this._native!.src =
+                        'data:image/svg+xml;base64,PHN2ZyBjbGFzcz0iaWNvbiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCI+PHBhdGggZD0iTTMwNC4xMjggNDU2LjE5MmM0OC42NCAwIDg4LjA2NC0zOS40MjQgODguMDY0LTg4LjA2NHMtMzkuNDI0LTg4LjA2NC04OC4wNjQtODguMDY0LTg4LjA2NCAzOS40MjQtODguMDY0IDg4LjA2NCAzOS40MjQgODguMDY0IDg4LjA2NCA4OC4wNjR6bTAtMTE2LjIyNGMxNS4zNiAwIDI4LjE2IDEyLjI4OCAyOC4xNiAyOC4xNnMtMTIuMjg4IDI4LjE2LTI4LjE2IDI4LjE2LTI4LjE2LTEyLjI4OC0yOC4xNi0yOC4xNiAxMi4yODgtMjguMTYgMjguMTYtMjguMTZ6IiBmaWxsPSIjZTZlNmU2Ii8+PHBhdGggZD0iTTg4Ny4yOTYgMTU5Ljc0NEgxMzYuNzA0Qzk2Ljc2OCAxNTkuNzQ0IDY0IDE5MiA2NCAyMzIuNDQ4djU1OS4xMDRjMCAzOS45MzYgMzIuMjU2IDcyLjcwNCA3Mi43MDQgNzIuNzA0aDE5OC4xNDRMNTAwLjIyNCA2ODguNjRsLTM2LjM1Mi0yMjIuNzIgMTYyLjMwNC0xMzAuNTYtNjEuNDQgMTQzLjg3MiA5Mi42NzIgMjE0LjAxNi0xMDUuNDcyIDE3MS4wMDhoMzM1LjM2QzkyNy4yMzIgODY0LjI1NiA5NjAgODMyIDk2MCA3OTEuNTUyVjIzMi40NDhjMC0zOS45MzYtMzIuMjU2LTcyLjcwNC03Mi43MDQtNzIuNzA0em0tMTM4Ljc1MiA3MS42OHYuNTEySDg1Ny42YzE2LjM4NCAwIDMwLjIwOCAxMy4zMTIgMzAuMjA4IDMwLjIwOHYzOTkuODcyTDY3My4yOCA0MDguMDY0bDc1LjI2NC0xNzYuNjR6TTMwNC42NCA3OTIuMDY0SDE2NS44ODhjLTE2LjM4NCAwLTMwLjIwOC0xMy4zMTItMzAuMjA4LTMwLjIwOHYtOS43MjhsMTM4Ljc1Mi0xNjQuMzUyIDEwNC45NiAxMjQuNDE2LTc0Ljc1MiA3OS44NzJ6bTgxLjkyLTM1NS44NGwzNy4zNzYgMjI4Ljg2NC0uNTEyLjUxMi0xNDIuODQ4LTE2OS45ODRjLTMuMDcyLTMuNTg0LTkuMjE2LTMuNTg0LTEyLjI4OCAwTDEzNS42OCA2NTIuOFYyNjIuMTQ0YzAtMTYuMzg0IDEzLjMxMi0zMC4yMDggMzAuMjA4LTMwLjIwOGg0NzQuNjI0TDM4Ni41NiA0MzYuMjI0em01MDEuMjQ4IDMyNS42MzJjMCAxNi44OTYtMTMuMzEyIDMwLjIwOC0yOS42OTYgMzAuMjA4SDY4MC45Nmw1Ny4zNDQtOTMuMTg0LTg3LjU1Mi0yMDIuMjQgNy4xNjgtNy42OCAyMjkuODg4IDI3Mi44OTZ6IiBmaWxsPSIjZTZlNmU2Ii8+PC9zdmc+';
+                    this.makeDirty(true);
+                }
+            };
+            this._native.src = config.url;
+        }
+
+        this._init();
+    }
+
+    get srcRect() {
+        return this._props.srcRect;
+    }
+
+    get prstGeom() {
+        return this._props.prstGeom;
+    }
+
+    get opacity() {
+        return this._props.opacity ?? 1;
+    }
+
+    get clipBounds() {
+        return this._props.clipBounds;
+    }
+
+    private _shouldRasterCache(): boolean {
+        const source = this._native?.src || this._props.url || '';
+        if (source !== this._rasterCacheSource) {
+            const previous = this._autoRasterCache;
+            this._rasterCacheSource = source;
+            this._autoRasterCache = shouldRasterCacheSvg(source);
+            if (previous && !this._autoRasterCache) {
+                this._releaseRenderCache();
+            }
+        }
+
+        return this._autoRasterCache;
+    }
+
+    setOpacity(opacity: number) {
+        this._props.opacity = opacity;
+        this.makeDirty(true);
+    }
+
+    setClipBounds(clipBounds?: Nullable<IShapeClipBounds>) {
+        this._props.clipBounds = clipBounds;
+        this.makeDirty(true);
+    }
+
+    setClipService(clipService: Nullable<IImageShapeClipService>) {
+        this._clipService = clipService;
+    }
+
+    getClipService(): Nullable<IImageShapeClipService> {
+        return this._clipService;
+    }
+
+    override get classType(): RENDER_CLASS_TYPE {
+        return RENDER_CLASS_TYPE.IMAGE;
+    }
+
+    transformByStateCloseCropper(option: IObjectFullState) {
+        this._transformCalculateSrcRect = false;
+        this.transformByState(option);
+        this._transformCalculateSrcRect = true;
+    }
+
+    changeSource(url: string) {
+        if (this._native == null) {
+            this._native = document.createElement('img');
+        }
+        this._native.onload = () => {
+            this.makeDirty(true);
+        };
+        this._native.src = url;
+    }
+
+    resetSize() {
+        if (this._native == null) {
+            return;
+        }
+        this.transformByState({
+            width: this._native.width,
+            height: this._native.height,
+        });
+        this.setSrcRect(null);
+    }
+
+    setPrstGeom(prstGeom?: Nullable<string>) {
+        this._props.prstGeom = prstGeom;
+    }
+
+    setPrstGeomAdjValues(adjValues?: Nullable<Record<string, number>>) {
+        this._props.adjustValues = adjValues;
+    }
+
+    get prstGeomAdjValues() {
+        return this._props.adjustValues;
+    }
+
+    setSrcRect(srcRect?: Nullable<ISrcRect>) {
+        this._props.srcRect = srcRect;
+
+        this.makeDirty(true);
+    }
+
+    getProps(): IImageProps {
+        return this._props;
+    }
+
+    getNative(): Nullable<HTMLImageElement> {
+        return this._native;
+    }
+
+    getNativeSize() {
+        if (this._native == null) {
+            return { width: this.width, height: this.height };
+        }
+        return { width: this._native.width, height: this._native.height };
+    }
+
+    closeRenderByCropper() {
+        this._renderByCropper = false;
+    }
+
+    openRenderByCropper() {
+        this._renderByCropper = true;
+        this._transformBySrcRect();
+    }
+    // override transformForAngle(transform: Transform) {
+    //     if (this.angle === 0) {
+    //         return transform;
+    //     }
+
+    //     let cx = (this.width + this.strokeWidth) / 2;
+    //     let cy = (this.height + this.strokeWidth) / 2;
+    //     if (this.srcRect != null) {
+    //         const { left = 0, top = 0, right = 0, bottom = 0 } = this.srcRect;
+    //         cx = (this.width + left + right + this.strokeWidth) / 2;
+    //         cy = (this.height + top + bottom + this.strokeWidth) / 2;
+    //     }
+
+    //     transform.rotate(-this.angle);
+    //     transform.translate(cx, cy);
+    //     transform.rotate(this.angle);
+    //     transform.translate(-cx, -cy);
+
+    //     return transform;
+    // }
+    calculateTransformWithSrcRect() {
+        const {
+            left: imageLeft,
+            top: imageTop,
+            width: imageWidth,
+            height: imageHeight,
+        } = this;
+
+        if (this.srcRect == null) {
+            return {
+                left: imageLeft,
+                top: imageTop,
+                width: imageWidth,
+                height: imageHeight,
+                angle: this.angle,
+            };
+        }
+        const { left = 0, top = 0, right = 0, bottom = 0 } = this.srcRect;
+
+        const newLeft = imageLeft - left;
+        const newTop = imageTop - top;
+
+        const width = imageWidth + right + left;
+        const height = imageHeight + bottom + top;
+
+        return {
+            left: newLeft,
+            top: newTop,
+            width,
+            height,
+            angle: this.angle,
+        };
+    }
+
+    private _transformBySrcRect() {
+        if (this.srcRect == null) {
+            return;
+        }
+        const { left = 0, top = 0, right = 0, bottom = 0 } = this.srcRect;
+        const {
+            width: imageWidth,
+            height: imageHeight,
+        } = this;
+
+        // let newLeft = imageLeft - left;
+        // let newTop = imageTop - top;
+
+        // const width = imageWidth + right + left;
+        // const height = imageHeight + bottom + top;
+
+        let { left: newLeft, top: newTop, width, height } = this.calculateTransformWithSrcRect();
+
+        if (this.angle !== 0) {
+            /**
+             * Calculate the offset of the center rotation to correctly position the object entering the cropping.
+             */
+            const cx = (imageWidth + this.strokeWidth) / 2;
+            const cy = (imageHeight + this.strokeWidth) / 2;
+
+            const newCx = width / 2 - left;
+            const newCy = height / 2 - top;
+
+            const finalPoint = offsetRotationAxis(new Vector2(cx, cy), this.angle, new Vector2(newLeft, newTop), new Vector2(newCx, newCy));
+
+            newLeft = finalPoint.x;
+            newTop = finalPoint.y;
+        }
+
+        this.transformByState({
+            left: newLeft,
+            top: newTop,
+            width,
+            height,
+        });
+    }
+
+    override render(mainCtx: UniverRenderingContext, bounds?: IViewportInfo) {
+        if (!this.visible) {
+            this.makeDirty(false);
+            return this;
+        }
+
+        if (!this.transform) {
+            return this;
+        }
+
+        let { width: realWidth, height: realHeight, left: realLeft, top: realTop } = this;
+
+        const realBound = this.getRealBound();
+        realWidth = realBound.width;
+        realHeight = realBound.height;
+        realLeft = realBound.left;
+        realTop = realBound.top;
+        // Temporarily ignore the on-demand display of elements within a group：this.isInGroup
+        if (this.isRender(bounds)) {
+            const { top, left, bottom, right } = bounds!.viewBound;
+
+            if (
+                realWidth + this.strokeWidth + realLeft < left ||
+                right < realLeft ||
+                realHeight + this.strokeWidth + realTop < top ||
+                bottom < realTop
+            ) {
+                return this;
+            }
+        }
+
+        const m = this.transform.getMatrix();
+        mainCtx.save();
+        const { clipBounds } = this;
+        if (clipBounds) {
+            mainCtx.beginPath();
+            mainCtx.rect(clipBounds.left, clipBounds.top, clipBounds.width, clipBounds.height);
+            mainCtx.clip();
+        }
+        // if (this.flipX || this.flipY) {
+        //     const centerX = this.left + this.width / 2;
+        //     const centerY = this.top + this.height / 2;
+        //    mainCtx.transform(m[0], m[1], m[2], m[3], centerX, centerY);
+        // }else {
+
+        //     mainCtx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+        // }
+        const centerX = realLeft + realWidth / 2;
+        const centerY = realTop + realHeight / 2;
+        mainCtx.transform(m[0], m[1], m[2], m[3], centerX, centerY);
+        if (this.opacity !== 1) {
+            mainCtx.globalAlpha = this.opacity;
+        }
+        this._draw(mainCtx, undefined, realWidth, realHeight);
+        mainCtx.restore();
+        this.makeDirty(false);
+        return this;
+    }
+
+    protected override _draw(ctx: UniverRenderingContext, _bounds?: IViewportInfo, renderWidth?: number, renderHeight?: number) {
+        const native = this._native;
+        if (native == null) {
+            return;
+        }
+        const w = renderWidth ?? this.width;
+        const h = renderHeight ?? this.height;
+
+        if (this._shouldRasterCache()) {
+            const transform = ctx.getTransform();
+            const requestedPixelRatio = Math.max(
+                Math.hypot(transform.a, transform.b),
+                Math.hypot(transform.c, transform.d)
+            );
+            const pixelRatio = resolveRasterCachePixelRatio(
+                w,
+                h,
+                Math.ceil(requestedPixelRatio / RASTER_CACHE_PIXEL_RATIO_STEP) * RASTER_CACHE_PIXEL_RATIO_STEP
+            );
+            this._renderWithCache(
+                ctx,
+                { left: -w / 2, top: -h / 2, right: w / 2, bottom: h / 2 },
+                (cacheContext) => this._drawNative(cacheContext, native, w, h),
+                pixelRatio
+            );
+            return;
+        }
+
+        this._drawNative(ctx, native, w, h);
+    }
+
+    private _drawNative(ctx: UniverRenderingContext, native: HTMLImageElement, w: number, h: number): void {
+        // Shape clip: when prstGeom is set and a clip service is available,
+        // clip the image to the shape outline (e.g. ellipse, roundRect, etc.)
+        if (this.prstGeom && this._clipService) {
+            ctx.save();
+            ctx.translate(-w / 2, -h / 2); // move origin to top-left for clip path
+            // Clip to bounding rect first so that any shape path overshooting the
+            // bounding box (e.g. due to control-point curves) is safely contained.
+            ctx.beginPath();
+            // ctx.rect(0, 0, w, h);
+            // ctx.clip();
+            const clipBounds = this._clipService.applyShapeClip(ctx, this.prstGeom, w, h, this.prstGeomAdjValues);
+            if (clipBounds) {
+                // Use the actual clip bounds for image drawing — for multi-path shapes
+                // (e.g. cloudCallout) the clip region may extend beyond (0, 0, w, h).
+                const drawLeft = clipBounds.left;
+                const drawTop = clipBounds.top;
+                const drawWidth = clipBounds.width;
+                const drawHeight = clipBounds.height;
+                if (!this._renderByCropper && this.srcRect) {
+                    const { left = 0, top = 0, right = 0, bottom = 0 } = this.srcRect;
+                    // srcRect offsets live in the image's original frame. Scale
+                    // them with the rendered frame (not just the shape clip), so
+                    // images resized by a drawing group keep the same crop.
+                    const scaleW = this.width > 0 ? drawWidth / this.width : 1;
+                    const scaleH = this.height > 0 ? drawHeight / this.height : 1;
+                    ctx.drawImage(
+                        native,
+                        drawLeft - left * scaleW,
+                        drawTop - top * scaleH,
+                        drawWidth + (right + left) * scaleW,
+                        drawHeight + (bottom + top) * scaleH
+                    );
+                } else {
+                    ctx.drawImage(native, drawLeft, drawTop, drawWidth, drawHeight);
+                }
+                ctx.restore();
+                return;
+            }
+            ctx.restore();
+        }
+
+        if (!this._renderByCropper && this.srcRect) {
+            const { left = 0, top = 0, right = 0, bottom = 0 } = this.srcRect;
+            const scaleW = this.width > 0 ? w / this.width : 1;
+            const scaleH = this.height > 0 ? h / this.height : 1;
+            ctx.beginPath();
+            ctx.rect(-w / 2, -h / 2, w, h);
+            ctx.clip();
+            ctx.drawImage(
+                native,
+                -left * scaleW - w / 2,
+                -top * scaleH - h / 2,
+                w + (right + left) * scaleW,
+                h + (bottom + top) * scaleH
+            );
+        } else {
+            ctx.drawImage(native, -w / 2, -h / 2, w, h);
+        }
+    }
+
+    private _init(): void {
+        this.onTransformChange$.subscribeEvent((state) => {
+            this._updateSrcRectByTransform(state);
+        });
+    }
+
+    private _updateSrcRectByTransform(state: ITransformChangeState) {
+        if (this.srcRect == null || !this._transformCalculateSrcRect) {
+            return;
+        }
+        const { width, height, left, top, angle } = this;
+        const { width: preWidth = 0, height: preHeight = 0, left: preLeft = 0, top: preTop = 0, angle: preAngle } = state.preValue as IObjectFullState;
+        const { left: srcLeft = 0, top: srcTop = 0, right: srcRight = 0, bottom: srcBottom = 0 } = this.srcRect;
+
+        let newLeft = srcLeft;
+        let newTop = srcTop;
+        let newRight = srcRight;
+        let newBottom = srcBottom;
+
+        let isChange = false;
+
+        if (preWidth !== 0 && preWidth !== width) {
+            const preLeftRatio = srcLeft / preWidth;
+            const preRightRatio = srcRight / preWidth;
+
+            newLeft = width * preLeftRatio;
+            newRight = width * preRightRatio;
+
+            isChange = true;
+        }
+
+        if (preHeight !== 0 && preHeight !== height) {
+            const preTopRatio = srcTop / preHeight;
+            const preBottomRatio = srcBottom / preHeight;
+
+            newTop = height * preTopRatio;
+            newBottom = height * preBottomRatio;
+
+            isChange = true;
+        }
+
+        if (isChange) {
+            this.setSrcRect({
+                left: newLeft,
+                top: newTop,
+                right: newRight,
+                bottom: newBottom,
+            });
+        }
+    }
+
+    override set transform(trans: Transform) {
+        this._transform = trans;
+    }
+
+    override get transform() {
+        // when active sheet is changed, maybe the image is reused, the transform need to be recalculated by transform
+        if (!this._transform) {
+            this._setTransForm();
+        }
+
+        const transform = this._transform.clone();
+        return this.transformForAngle(transform);
+    }
+
+    override isHit(coord: Vector2) {
+        // Build the same effective transform used in render():
+        // Must use realBound to match render() method's coordinate system
+        // [m[0], m[1], m[2], m[3], centerX, centerY]
+
+        const realBound = this.getRealBound();
+        const { left: realLeft, top: realTop, width: realWidth, height: realHeight } = realBound;
+        const centerX = realLeft + realWidth / 2;
+        const centerY = realTop + realHeight / 2;
+        const m = this.transform.getMatrix();
+        const renderTransform = new Transform([m[0], m[1], m[2], m[3], centerX, centerY]);
+
+        // Account for parent group transforms if applicable
+        // This handles multi-level nesting and parent flipX/flipY transformations
+        const parent = this.getParent();
+        const effectiveTransform = this.isInGroup && parent?.classType === RENDER_CLASS_TYPE.GROUP
+            ? parent.ancestorTransform.multiply(renderTransform)
+            : renderTransform;
+
+        const oCoord = effectiveTransform.invert().applyPoint(coord);
+        const halfWidth = realWidth / 2;
+        const halfHeight = realHeight / 2;
+        if (
+            oCoord.x >= -halfWidth - this.strokeWidth / 2 &&
+            oCoord.x <= halfWidth + this.strokeWidth / 2 &&
+            oCoord.y >= -halfHeight - this.strokeWidth / 2 &&
+            oCoord.y <= halfHeight + this.strokeWidth / 2
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+}

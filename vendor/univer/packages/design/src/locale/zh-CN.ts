@@ -1,0 +1,83 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type enUS from './en-US';
+
+const locale: typeof enUS = {
+    design: {
+        Accessibility: {
+            closeBadge: '关闭徽章',
+            close: '关闭',
+            previous: '上一个',
+            next: '下一个',
+            imageGallery: '图片库',
+            image: '第 {0} 张图片，共 {1} 张',
+            zoomIn: '放大',
+            zoomOut: '缩小',
+            resetZoom: '重置缩放',
+            increment: '增加',
+            decrement: '减少',
+        },
+        Confirm: {
+            cancel: '取消',
+            confirm: '确定',
+        },
+        CascaderList: {
+            empty: '无',
+        },
+        Calendar: {
+            year: '年',
+            weekDays: ['日', '一', '二', '三', '四', '五', '六'],
+            months: [
+                '一月',
+                '二月',
+                '三月',
+                '四月',
+                '五月',
+                '六月',
+                '七月',
+                '八月',
+                '九月',
+                '十月',
+                '十一月',
+                '十二月',
+            ],
+            ariaLabels: {
+                previousMonth: '上个月',
+                nextMonth: '下个月',
+                selectYear: '选择年份',
+                selectMonth: '选择月份',
+            },
+        },
+        ColorPicker: {
+            more: '更多颜色',
+            cancel: '取消',
+            confirm: '确定',
+        },
+        GradientColorPicker: {
+            linear: '线性',
+            radial: '径向',
+            angular: '角向',
+            diamond: '菱形',
+            offset: '偏移',
+            angle: '角度',
+            delete: '删除',
+            transparency: '透明度',
+        },
+    },
+};
+
+export default locale;

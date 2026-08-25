@@ -1,0 +1,395 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { DocumentDataModel, ICommandInfo, IDocumentBody, IDocumentStyle, IDrawings, IParagraph, Nullable } from '@univerjs/core';
+import type { IRichTextEditingMutationParams } from '@univerjs/docs';
+import type { DocumentViewModel } from '@univerjs/engine-render';
+import type { IMoveRangeMutationParams, ISetRangeValuesMutationParams } from '@univerjs/sheets';
+import type { ICellEditorState } from '../../services/editor-bridge.service';
+import {
+    BooleanNumber,
+    createParagraphId,
+    Disposable,
+    DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY,
+    DOCS_NORMAL_EDITOR_UNIT_ID_KEY,
+    DocumentFlavor,
+    FOCUSING_FX_BAR_EDITOR,
+    HorizontalAlign,
+    ICommandService,
+    IContextService,
+    Inject,
+    IUniverInstanceService,
+    ThemeService,
+    Tools,
+    UniverInstanceType,
+    VerticalAlign,
+    WrapStrategy,
+} from '@univerjs/core';
+import { DocSkeletonManagerService, RichTextEditingMutation } from '@univerjs/docs';
+import { ReplaceSnapshotCommand } from '@univerjs/docs-ui';
+import { DeviceInputEventType, IRenderManagerService } from '@univerjs/engine-render';
+import { MoveRangeMutation, RangeProtectionRuleModel, SetRangeValuesMutation, WorksheetProtectionRuleModel } from '@univerjs/sheets';
+import { skip } from 'rxjs';
+import { IEditorBridgeService } from '../../services/editor-bridge.service';
+import { IFormulaEditorManagerService } from '../../services/editor/formula-editor-manager.service';
+import { FormulaEditorController } from './formula-editor.controller';
+
+const formulaEditorStyle: IDocumentStyle = {
+    pageSize: {
+        width: Number.POSITIVE_INFINITY,
+        height: Number.POSITIVE_INFINITY,
+    },
+    documentFlavor: DocumentFlavor.UNSPECIFIED,
+    marginTop: 5,
+    marginBottom: 5,
+    marginRight: 0,
+    marginLeft: 0,
+    paragraphLineGapDefault: 0,
+    renderConfig: {
+        horizontalAlign: HorizontalAlign.UNSPECIFIED,
+        verticalAlign: VerticalAlign.TOP,
+        centerAngle: 0,
+        vertexAngle: 0,
+        wrapStrategy: WrapStrategy.WRAP,
+        isRenderStyle: BooleanNumber.FALSE,
+    },
+};
+
+/**
+ * sync data between cell editor and formula editor
+ */
+export class EditorDataSyncController extends Disposable {
+    constructor(
+        @IUniverInstanceService private readonly _univerInstanceService: IUniverInstanceService,
+        @IRenderManagerService private readonly _renderManagerService: IRenderManagerService,
+        @IEditorBridgeService private readonly _editorBridgeService: IEditorBridgeService,
+        @ICommandService private readonly _commandService: ICommandService,
+        @Inject(RangeProtectionRuleModel) private readonly _rangeProtectionRuleModel: RangeProtectionRuleModel,
+        @Inject(WorksheetProtectionRuleModel) private readonly _worksheetProtectionRuleModel: WorksheetProtectionRuleModel,
+        @Inject(FormulaEditorController) private readonly _formulaEditorController: FormulaEditorController,
+        @IFormulaEditorManagerService private readonly _formulaEditorManagerService: IFormulaEditorManagerService,
+        @IContextService private readonly _contextService: IContextService,
+        @Inject(ThemeService) private readonly _themeService: ThemeService
+    ) {
+        super();
+
+        this._initialize();
+    }
+
+    private _initialize() {
+        this._syncFormulaEditorContent();
+        this._commandExecutedListener();
+        this._syncFormulaRefRenderStyleOnFocusChange();
+        this._syncFormulaBarTextColorOnThemeChange();
+    }
+
+    private _getEditorViewModel(unitId: string): Nullable<DocumentViewModel> {
+        return this._renderManagerService.getRenderUnitById(unitId)?.with(DocSkeletonManagerService).getViewModel();
+    }
+
+    // Sync cell content to formula editor bar when sheet selection changed.
+    private _syncFormulaEditorContent() {
+        this.disposeWithMe(this._editorBridgeService.currentEditCellState$.subscribe((editCellState) => {
+            if (
+                editCellState == null
+                || this._editorBridgeService.isForceKeepVisible()
+                // If permissions are not initialized, data synchronization will not be performed.
+                || !this._rangeProtectionRuleModel.getRangeRuleInitState()
+                || !this._worksheetProtectionRuleModel.getSheetRuleInitState()
+            ) {
+                return;
+            }
+
+            this._editorSyncHandler(editCellState);
+        }));
+    }
+
+    // Sync cell content to formula editor bar when sheet selection changed or visible changed.
+    private _editorSyncHandler(param: ICellEditorState) {
+        let body = Tools.deepClone(param.documentLayoutObject.documentModel?.getBody());
+        const drawings = Tools.deepClone(param.documentLayoutObject.documentModel?.drawings);
+        const drawingsOrder = Tools.deepClone(param.documentLayoutObject.documentModel?.getDrawingsOrder());
+
+        if (
+            !body ||
+            (param.isInArrayFormulaRange === true && this._editorBridgeService.isVisible().eventType === DeviceInputEventType.Dblclick)
+        ) {
+            body = {
+                dataStream: '\r\n',
+                paragraphs: [
+                    {
+                        startIndex: 0,
+                        paragraphId: createParagraphId(new Set()),
+                    },
+                ],
+                textRuns: [],
+            };
+        }
+
+        this._syncContentAndRender(DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY, body, drawings, drawingsOrder);
+    }
+
+    private _commandExecutedListener() {
+        const INCLUDE_LIST = [DOCS_NORMAL_EDITOR_UNIT_ID_KEY, DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY];
+
+        this.disposeWithMe(
+            this._commandService.onCommandExecuted((command: ICommandInfo) => {
+                if (command.id === RichTextEditingMutation.id) {
+                    const params = command.params as IRichTextEditingMutationParams;
+                    const { unitId, trigger, isSync } = params;
+                    if (isSync || trigger === ReplaceSnapshotCommand.id) {
+                        return;
+                    }
+
+                    if (INCLUDE_LIST.includes(unitId)) {
+                        // sync cell content to formula editor bar when edit cell editor and vice verse.
+                        const editorDocDataModel = this._univerInstanceService.getUnit<DocumentDataModel>(unitId, UniverInstanceType.UNIVER_DOC);
+
+                        const syncId =
+                            unitId === DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY
+                                ? DOCS_NORMAL_EDITOR_UNIT_ID_KEY
+                                : DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY;
+
+                        this._checkAndSetRenderStyleConfig(editorDocDataModel!);
+                        this._syncActionsAndRender(syncId, params);
+                    }
+                }
+            })
+        );
+
+        // Update formula bar content when you call SetRangeValuesMutation and MoveRangeMutation.
+        const needUpdateFormulaEditorContentCommandList = [SetRangeValuesMutation.id, MoveRangeMutation.id];
+        this.disposeWithMe(
+            this._commandService.onCommandExecuted((command: ICommandInfo) => {
+                if (!needUpdateFormulaEditorContentCommandList.includes(command.id)) {
+                    return;
+                }
+
+                const editCellState = this._editorBridgeService.getEditLocation();
+
+                if (editCellState == null) {
+                    return;
+                }
+
+                const { row, column } = editCellState;
+
+                if (this._shouldRefreshCurrentEditCell(command, row, column)) {
+                    /**
+                     * Refresh the current edit-cell snapshot so both the hidden cell editor and
+                     * the formula bar stay aligned with external cell mutations.
+                     */
+                    this._editorBridgeService.refreshEditCellState();
+                }
+            })
+        );
+    }
+
+    private _shouldRefreshCurrentEditCell(command: ICommandInfo, row: number, column: number): boolean {
+        if (command.id === SetRangeValuesMutation.id && command.params) {
+            const params = command.params as ISetRangeValuesMutationParams;
+            return this._hasMatrixCell(params.cellValue, row, column);
+        }
+
+        if (command.id === MoveRangeMutation.id && command.params) {
+            const params = command.params as IMoveRangeMutationParams;
+            return this._hasMatrixCell(params.from.value, row, column) || this._hasMatrixCell(params.to.value, row, column);
+        }
+
+        return false;
+    }
+
+    private _hasMatrixCell(
+        matrix: ISetRangeValuesMutationParams['cellValue'] | IMoveRangeMutationParams['from']['value'],
+        row: number,
+        column: number
+    ): boolean {
+        const rowData = matrix?.[row];
+        return rowData != null && Object.prototype.hasOwnProperty.call(rowData, column);
+    }
+
+    // Sync actions between cell editor and formula editor, and make `dataStream` and `paragraph` is the same.
+    private _syncActionsAndRender(
+        unitId: string,
+        parmas: IRichTextEditingMutationParams
+    ) {
+        const INCLUDE_LIST = [DOCS_NORMAL_EDITOR_UNIT_ID_KEY, DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY];
+        const currentRender = this._renderManagerService.getRenderUnitById(unitId);
+        if (currentRender == null) {
+            return;
+        }
+
+        const skeleton = currentRender.with(DocSkeletonManagerService).getSkeleton();
+        const docDataModel = this._univerInstanceService.getUnit<DocumentDataModel>(unitId, UniverInstanceType.UNIVER_DOC);
+        const docViewModel = this._getEditorViewModel(unitId);
+
+        if (docDataModel == null || docViewModel == null) {
+            return;
+        }
+
+        this._commandService.syncExecuteCommand(RichTextEditingMutation.id, {
+            ...parmas,
+            textRanges: null,
+            isSync: true,
+            unitId,
+            syncer: parmas.unitId,
+        });
+
+        this._checkAndSetRenderStyleConfig(docDataModel);
+        docViewModel.reset(docDataModel);
+
+        skeleton.calculate();
+
+        if (INCLUDE_LIST.includes(unitId)) {
+            currentRender.mainComponent?.makeDirty();
+        }
+    }
+
+    private _syncContentAndRender(
+        unitId: string,
+        body: IDocumentBody,
+        drawings: Nullable<IDrawings>,
+        drawingsOrder: Nullable<string[]>
+    ) {
+        if (unitId === DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY) {
+            if (body.paragraphs) {
+                body.paragraphs = this._clearParagraph(body.paragraphs);
+            }
+        }
+        const INCLUDE_LIST = [DOCS_NORMAL_EDITOR_UNIT_ID_KEY, DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY];
+
+        const skeleton = this._renderManagerService.getRenderUnitById(unitId)?.with(DocSkeletonManagerService).getSkeleton();
+        const docDataModel = this._univerInstanceService.getUnit<DocumentDataModel>(unitId, UniverInstanceType.UNIVER_DOC);
+        const docViewModel = this._getEditorViewModel(unitId);
+
+        if (docDataModel == null || docViewModel == null || skeleton == null) {
+            return;
+        }
+
+        docDataModel.getSnapshot().body = body;
+        docDataModel.getSnapshot().drawings = drawings ?? {};
+        docDataModel.getSnapshot().drawingsOrder = drawingsOrder ?? [];
+
+        this._checkAndSetRenderStyleConfig(docDataModel);
+        docViewModel.reset(docDataModel);
+        const currentRender = this._renderManagerService.getRenderUnitById(unitId);
+        if (currentRender == null) {
+            return;
+        }
+
+        skeleton.calculate();
+
+        if (INCLUDE_LIST.includes(unitId)) {
+            currentRender.mainComponent?.makeDirty();
+        }
+
+        if (unitId === DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY) {
+            this._formulaEditorController.autoScroll();
+        }
+    }
+
+    private _syncFormulaRefRenderStyleOnFocusChange() {
+        this.disposeWithMe(this._contextService.subscribeContextValue$(FOCUSING_FX_BAR_EDITOR).subscribe(() => {
+            this._refreshRenderStyleConfig(DOCS_NORMAL_EDITOR_UNIT_ID_KEY);
+            this._refreshRenderStyleConfig(DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY);
+        }));
+    }
+
+    private _syncFormulaBarTextColorOnThemeChange() {
+        this.disposeWithMe(this._themeService.currentTheme$.pipe(skip(1)).subscribe(() => {
+            this._refreshRenderStyleConfig(DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY);
+        }));
+    }
+
+    private _refreshRenderStyleConfig(unitId: string) {
+        const currentRender = this._renderManagerService.getRenderUnitById(unitId);
+        const skeleton = currentRender?.with(DocSkeletonManagerService).getSkeleton();
+        const docDataModel = this._univerInstanceService.getUnit<DocumentDataModel>(unitId, UniverInstanceType.UNIVER_DOC);
+        const docViewModel = this._getEditorViewModel(unitId);
+
+        if (currentRender == null || skeleton == null || docDataModel == null || docViewModel == null) {
+            return;
+        }
+
+        this._checkAndSetRenderStyleConfig(docDataModel);
+        docViewModel.reset(docDataModel);
+        skeleton.calculate();
+        currentRender.mainComponent?.makeDirty();
+
+        if (unitId === DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY) {
+            this._formulaEditorController.autoScroll();
+        }
+    }
+
+    private _checkAndSetRenderStyleConfig(documentDataModel: DocumentDataModel) {
+        const snapshot = documentDataModel.getSnapshot();
+
+        if (snapshot.id !== DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY && snapshot.id !== DOCS_NORMAL_EDITOR_UNIT_ID_KEY) {
+            return;
+        }
+
+        const isFormulaBar = snapshot.id === DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY;
+        const previousPageWidth = snapshot.documentStyle?.pageSize?.width;
+        if (isFormulaBar) {
+            snapshot.documentStyle = {
+                ...formulaEditorStyle,
+                textStyle: {
+                    cl: {
+                        rgb: this._themeService.getColorFromTheme('gray.900'),
+                    },
+                },
+            };
+        } else {
+            snapshot.documentStyle ??= {};
+        }
+        let renderConfig = snapshot.documentStyle.renderConfig;
+
+        if (renderConfig == null) {
+            renderConfig = {};
+            snapshot.documentStyle.renderConfig = renderConfig;
+        }
+        const position = isFormulaBar ? this._formulaEditorManagerService.getPosition() : null;
+        if (isFormulaBar && position) {
+            // A non-positive width means the formula bar is not laid out, so keep the last valid width.
+            const width = position.width > 0 ? position.width : previousPageWidth;
+            if (width != null && width > 0) {
+                snapshot.documentStyle.pageSize = {
+                    width,
+                    height: Infinity,
+                };
+            }
+        }
+
+        const isFormula = (snapshot.body?.dataStream ?? '').startsWith('=');
+        if (!isFormula) {
+            renderConfig.isRenderStyle = isFormulaBar ? BooleanNumber.FALSE : BooleanNumber.TRUE;
+            return;
+        }
+
+        const isFocusFxBar = this._contextService.getContextValue(FOCUSING_FX_BAR_EDITOR);
+        renderConfig.isRenderStyle = isFormulaBar === isFocusFxBar ? BooleanNumber.TRUE : BooleanNumber.FALSE;
+    }
+
+    private _clearParagraph(paragraphs: IParagraph[]) {
+        const newParagraphs = Tools.deepClone(paragraphs);
+        for (const paragraph of newParagraphs) {
+            if (paragraph.paragraphStyle) {
+                paragraph.paragraphStyle.horizontalAlign = HorizontalAlign.UNSPECIFIED;
+            }
+        }
+
+        return newParagraphs;
+    }
+}

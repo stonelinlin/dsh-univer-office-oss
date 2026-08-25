@@ -1,0 +1,338 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { IDrawingParam, IDrawingSearch, Workbook } from '@univerjs/core';
+import type { IDocFloatDomData, IImageData } from '@univerjs/drawing';
+import type { BaseObject, IImageProps, IRectProps, Scene } from '@univerjs/engine-render';
+import {
+    BooleanNumber,
+    DrawingTypeEnum,
+    IImageIoService,
+    ImageSourceType,
+    Inject,
+    IUniverInstanceService,
+    IURLImageService,
+    PositionedObjectLayoutType,
+    UniverInstanceType,
+} from '@univerjs/core';
+import {
+    getDrawingShapeKeyByDrawingSearch,
+    IDrawingManagerService,
+} from '@univerjs/drawing';
+import { DRAWING_OBJECT_LAYER_INDEX, Image, Rect } from '@univerjs/engine-render';
+import { IGalleryService } from '@univerjs/ui';
+import { insertGroupObject } from '../controllers/utils';
+import { DrawingImageClipService } from './drawing-image-clip.service';
+
+// const IMAGE_VIEWER_DROPDOWN_PADDING = 50;
+
+interface IDrawingTransformStateWithClipBounds {
+    clipBounds?: { left: number; top: number; width: number; height: number } | null;
+}
+
+type IDrawingParamWithBehindText = (Partial<IDrawingParam> | Partial<IImageData>) & {
+    behindText?: boolean | BooleanNumber;
+    behindDoc?: BooleanNumber;
+    layoutType?: PositionedObjectLayoutType;
+    docxHeaderFooterDrawing?: boolean;
+};
+
+export const DOC_DRAWING_BEHIND_TEXT_LAYER_INDEX = 1;
+
+export function getDrawingRenderLayerIndex(param: IDrawingParamWithBehindText): number {
+    return param.behindText === true || param.behindText === BooleanNumber.TRUE
+        || (param.layoutType === PositionedObjectLayoutType.WRAP_NONE && param.behindDoc === BooleanNumber.TRUE)
+        ? DOC_DRAWING_BEHIND_TEXT_LAYER_INDEX
+        : DRAWING_OBJECT_LAYER_INDEX;
+}
+
+export function ensureDrawingRenderLayer(scene: Scene, object: BaseObject, param: IDrawingParamWithBehindText): void {
+    const layerIndex = getDrawingRenderLayerIndex(param);
+    if (object.layer == null || object.layer.zIndex === layerIndex) {
+        return;
+    }
+
+    scene.removeObject(object);
+    scene.addObject(object, layerIndex);
+}
+
+function isRenderableImageCache(image: HTMLImageElement | null | undefined | void): image is HTMLImageElement {
+    return image?.complete === true && image.naturalWidth > 0 && image.naturalHeight > 0;
+}
+
+export class DrawingRenderService {
+    constructor(
+        @IDrawingManagerService private readonly _drawingManagerService: IDrawingManagerService,
+        @IImageIoService private readonly _imageIoService: IImageIoService,
+        @IGalleryService private readonly _galleryService: IGalleryService,
+        @IURLImageService private readonly _urlImageService: IURLImageService,
+        @IUniverInstanceService private readonly _univerInstanceService: IUniverInstanceService,
+        @Inject(DrawingImageClipService) private readonly _drawingImageClipService: DrawingImageClipService
+    ) { }
+
+    // eslint-disable-next-line max-lines-per-function, complexity
+    async renderImages(imageParam: IImageData, scene: Scene, options?: { allowInactiveSheet?: boolean }) {
+        const {
+            transform: singleTransform,
+            drawingType,
+            source,
+            imageSourceType,
+            srcRect,
+            prstGeom,
+            groupId,
+            unitId,
+            subUnitId,
+            drawingId,
+            isMultiTransform,
+            transforms: multiTransforms,
+            adjustValues,
+            hidden,
+        } = imageParam;
+        const { docxHeaderFooterDrawing, layoutType } = imageParam as IImageData & {
+            docxHeaderFooterDrawing?: boolean;
+            layoutType?: PositionedObjectLayoutType;
+        };
+
+        if (drawingType !== DrawingTypeEnum.DRAWING_IMAGE) {
+            return;
+        }
+
+        if (!this._drawingManagerService.getDrawingVisible()) {
+            return;
+        }
+
+        // Isolated print scenes may target a worksheet that is not active in the editor.
+        if (!options?.allowInactiveSheet && this._univerInstanceService.getUnitType(unitId) === UniverInstanceType.UNIVER_SHEET && subUnitId !== this._getActiveSheetId()) {
+            return;
+        }
+
+        if (singleTransform == null) {
+            return;
+        }
+
+        const transforms = isMultiTransform && multiTransforms ? multiTransforms : [singleTransform];
+        const images = [];
+
+        for (const transform of transforms) {
+            const { left, top, width, height, angle, flipX, flipY, skewX, skewY } = transform;
+            const index = transforms.indexOf(transform);
+            const imageShapeKey = getDrawingShapeKeyByDrawingSearch({ unitId, subUnitId, drawingId }, isMultiTransform ? index : undefined);
+
+            const imageShape = scene.getObject(imageShapeKey);
+            if (imageShape != null) {
+                imageShape.transformByState({ left, top, width, height, angle, flipX, flipY, skewX, skewY });
+                (imageShape as Image).setClipBounds?.((transform as IDrawingTransformStateWithClipBounds).clipBounds);
+                if ('hidden' in imageParam) {
+                    hidden ? imageShape.hide() : imageShape.show();
+                }
+                ensureDrawingRenderLayer(scene, imageShape, imageParam as IDrawingParamWithBehindText);
+                continue;
+            }
+
+            const orders = this._drawingManagerService.getDrawingOrder(unitId, subUnitId);
+            const zIndex = orders.indexOf(drawingId);
+            const imageConfig: IImageProps = { ...transform, zIndex: zIndex === -1 ? (orders.length - 1) : zIndex };
+            const imageNativeCache = this._imageIoService.getImageSourceCache(source, imageSourceType);
+
+            let shouldBeCache = false;
+            if (isRenderableImageCache(imageNativeCache)) {
+                imageConfig.image = imageNativeCache;
+            } else {
+                if (imageSourceType === ImageSourceType.UUID) {
+                    try {
+                        imageConfig.url = await this._imageIoService.getImage(source);
+                    } catch (error) {
+                        console.error(error);
+                        continue;
+                    }
+                } else if (imageSourceType === ImageSourceType.URL) {
+                    try {
+                        imageConfig.url = await this._urlImageService.getImage(source);
+                    } catch (error) {
+                        console.error(error);
+                        imageConfig.url = source;
+                    }
+                    shouldBeCache = true;
+                } else {
+                    imageConfig.url = source;
+                    shouldBeCache = true;
+                }
+            }
+
+            const shouldWaitForInlineTransform =
+                docxHeaderFooterDrawing === true && layoutType === PositionedObjectLayoutType.INLINE;
+            if (hidden || shouldWaitForInlineTransform) {
+                imageConfig.visible = false;
+            }
+
+            if (scene.getObject(imageShapeKey)) {
+                // The image maybe already added  in the time we are getting  the source of the image
+                continue;
+            }
+
+            imageConfig.printable = true;
+            const image = new Image(imageShapeKey, imageConfig);
+            image.setClipService(this._drawingImageClipService);
+            if (shouldBeCache) {
+                this._imageIoService.addImageSourceCache(source, imageSourceType, image.getNative());
+            }
+
+            scene.addObject(image, getDrawingRenderLayerIndex(imageParam as IDrawingParamWithBehindText));
+            if (this._drawingManagerService.getDrawingEditable()) {
+                scene.attachTransformerTo(image);
+            }
+
+            groupId && insertGroupObject({ drawingId: groupId, unitId, subUnitId }, image, scene, this._drawingManagerService);
+
+            if (prstGeom != null) {
+                image.setPrstGeom(prstGeom);
+            }
+            if (adjustValues != null) {
+                image.setPrstGeomAdjValues(adjustValues);
+            }
+            if (srcRect != null) {
+                image.setSrcRect(srcRect);
+            }
+
+            images.push(image);
+        }
+
+        return images;
+    }
+
+    private _getActiveSheetId(): string | undefined {
+        return this._univerInstanceService
+            .getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET)
+            ?.getActiveSheet()
+            ?.getSheetId();
+    }
+
+    renderFloatDom(param: IDocFloatDomData, scene: Scene) {
+        const {
+            transform: singleTransform,
+            drawingType,
+            groupId,
+            unitId,
+            subUnitId,
+            drawingId,
+            isMultiTransform,
+            transforms: multiTransforms,
+        } = param;
+        if (drawingType !== DrawingTypeEnum.DRAWING_DOM) {
+            return;
+        }
+
+        if (!this._drawingManagerService.getDrawingVisible()) {
+            return;
+        }
+
+        if (singleTransform == null) {
+            return;
+        }
+
+        const transforms = isMultiTransform && multiTransforms ? multiTransforms : [singleTransform];
+
+        const rects = [];
+        for (const transform of transforms) {
+            const { left, top, width, height, angle, flipX, flipY, skewX, skewY } = transform;
+            const index = transforms.indexOf(transform);
+            const imageShapeKey = getDrawingShapeKeyByDrawingSearch({ unitId, subUnitId, drawingId }, isMultiTransform ? index : undefined);
+            const imageShape = scene.getObject(imageShapeKey);
+
+            if (imageShape != null) {
+                imageShape.transformByState({ left, top, width, height, angle, flipX, flipY, skewX, skewY });
+                continue;
+            }
+
+            const orders = this._drawingManagerService.getDrawingOrder(unitId, subUnitId);
+            const zIndex = orders.indexOf(drawingId);
+            const rectConfig: IRectProps = { ...transform, zIndex: zIndex === -1 ? (orders.length - 1) : zIndex };
+
+            if (scene.getObject(imageShapeKey)) {
+                // The image maybe already added  in the time we are getting  the source of the image
+                continue;
+            }
+
+            rectConfig.printable = false;
+            const rect = new Rect(imageShapeKey, rectConfig);
+
+            if (!this._drawingManagerService.getDrawingVisible()) {
+                continue;
+            }
+
+            scene.addObject(rect, DRAWING_OBJECT_LAYER_INDEX);
+            if (this._drawingManagerService.getDrawingEditable() && param.allowTransform !== false) {
+                scene.attachTransformerTo(rect);
+            }
+
+            groupId && insertGroupObject({ drawingId: groupId, unitId, subUnitId }, rect, scene, this._drawingManagerService);
+            rects.push(rect);
+        }
+
+        return rects;
+    }
+
+    renderDrawing(param: IDrawingSearch, scene: Scene, options?: { allowInactiveSheet?: boolean }) {
+        const drawingParam = this._drawingManagerService.getDrawingByParam(param);
+        if (drawingParam == null) {
+            return;
+        }
+
+        switch (drawingParam.drawingType) {
+            case DrawingTypeEnum.DRAWING_IMAGE:
+                return this.renderImages(drawingParam as IImageData, scene, options);
+            default:
+        }
+    }
+
+    previewImage(key: string, src: string, width: number, height: number) {
+        // const dialogId = `${key}-viewer-dialog`;
+
+        // const screenWidth = window.innerWidth - IMAGE_VIEWER_DROPDOWN_PADDING;
+        // const screenHeight = window.innerHeight - IMAGE_VIEWER_DROPDOWN_PADDING;
+
+        // const adjustSize = this._adjustImageSize(width, height, screenWidth, screenHeight);
+        this._galleryService.open({
+            images: [src],
+            onOpenChange: (open) => {
+                if (!open) {
+                    this._galleryService.close();
+                }
+            },
+        });
+    }
+
+    private _adjustImageSize(nativeWidth: number, nativeHeight: number, screenWidth: number, screenHeight: number) {
+        // Use native size if the image is smaller than the screen
+        if (nativeWidth <= screenWidth && nativeHeight <= screenHeight) {
+            return {
+                width: nativeWidth,
+                height: nativeHeight,
+            };
+        }
+
+        // Calculate scale ratios
+        const widthRatio = screenWidth / nativeWidth;
+        const heightRatio = screenHeight / nativeHeight;
+        const scale = Math.min(widthRatio, heightRatio); // Choose the smaller ratio to ensure the image fits within the screen
+
+        // Return new dimensions
+        return {
+            width: Math.floor(nativeWidth * scale),
+            height: Math.floor(nativeHeight * scale),
+        };
+    }
+}

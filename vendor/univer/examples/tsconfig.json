@@ -1,0 +1,9 @@
+{
+    "extends": "@univerjs-infra/shared/tsconfigs/base",
+    "compilerOptions": {
+        "types": ["esbuild-style-plugin"],
+        "allowArbitraryExtensions": true,
+        "outDir": "local"
+    },
+    "include": ["src", "scripts", "tailwind.config.ts"]
+}

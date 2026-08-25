@@ -1,0 +1,120 @@
+import type { StorybookConfig } from '@storybook/react-webpack5';
+import type { StoriesEntry } from 'storybook/internal/types';
+import { existsSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import TsconfigPathsPlugin from 'tsconfig-paths-webpack-plugin';
+
+const __dirname = pathToFileURL(new URL('.', import.meta.url).pathname).pathname;
+
+const tsconfigPathsPlugin = new TsconfigPathsPlugin({
+    configFile: resolve(__dirname, '../tsconfig.storybook.json'),
+    extensions: ['.ts', '.tsx', '.js'],
+});
+
+const config: StorybookConfig = {
+    stories: async () => {
+        const rootPaths = ['../../../packages'];
+        const isSubmodules = __dirname.includes('submodules');
+        if (isSubmodules) {
+            rootPaths.push('../../../../../packages');
+        }
+
+        const stories: StoriesEntry[] | PromiseLike<StoriesEntry[]> = [];
+        rootPaths.forEach((rootPath) => {
+            const rootDir = resolve(__dirname, rootPath);
+            if (existsSync(rootDir)) {
+                readdirSync(rootDir).forEach((pkg) => {
+                    const pkgPath = resolve(rootDir, pkg, 'package.json');
+                    const srcDir = resolve(rootDir, pkg, 'src');
+                    if (existsSync(pkgPath) && existsSync(srcDir)) {
+                        stories.push({
+                            directory: `${rootPath}/${pkg}/src`,
+                            files: '**/*.stories.@(js|jsx|mjs|ts|tsx)',
+                            titlePrefix: pkg,
+                        });
+                    }
+                });
+            }
+        });
+
+        return stories;
+    },
+    addons: [
+        '@storybook/addon-links',
+        '@chromatic-com/storybook',
+        '@storybook/addon-webpack5-compiler-swc',
+        {
+            name: '@storybook/addon-styling-webpack',
+            options: {
+                rules: [
+                    {
+                        test: /\.css$/,
+                        sideEffects: true,
+                        use: [
+                            'style-loader',
+                            {
+                                loader: 'css-loader',
+                                options: {
+                                    importLoaders: 1,
+                                },
+                            },
+                            {
+                                loader: 'postcss-loader',
+                                options: {
+                                    implementation: 'postcss',
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+        '@storybook/addon-docs',
+    ],
+    framework: {
+        name: '@storybook/react-webpack5',
+        options: {},
+    },
+    swc: () => {
+        return {
+            isModule: true,
+            module: {
+                type: 'es6',
+                noInterop: true,
+            },
+            env: {
+                target: 'es2022',
+            },
+            jsc: {
+                parser: {
+                    syntax: 'typescript',
+                    tsx: true,
+                    decorators: true,
+                    decoratorsBeforeExport: true,
+                    dynamicImport: true,
+                },
+                transform: {
+                    react: {
+                        runtime: 'automatic',
+                    },
+                    legacyDecorator: true,
+                    decoratorMetadata: true,
+                },
+                loose: true,
+            },
+        };
+    },
+    docs: {
+        defaultName: 'documentatie',
+    },
+    async webpackFinal(config) {
+        if (config.resolve) {
+            config.resolve.plugins = [tsconfigPathsPlugin];
+        }
+
+        return config;
+    },
+};
+
+export default config;

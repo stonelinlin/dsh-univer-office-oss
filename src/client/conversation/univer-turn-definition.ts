@@ -4,7 +4,7 @@ import type {
 import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 
-export type UniverOperationName = 'new' | 'status' | 'worktree' | 'unit' | 'import' | 'inspect' | 'execute' | 'export' | 'lint' | 'screenshot' | 'compile-svg'
+export type UniverOperationName = 'new' | 'status' | 'worktree' | 'unit' | 'import' | 'inspect' | 'execute' | 'export'
 export type UniverOperationPhase = 'pending' | 'succeeded' | 'failed'
 export type UniverTurnLifecycle = 'trunk' | 'draft' | 'ready' | 'merged' | 'discarded' | 'unchanged'
 
@@ -226,12 +226,12 @@ function structuredResult(data: SessionEvent<'tool/result'>['data']): Record<str
 function operationName(name: string): UniverOperationName | null {
   if (!name.startsWith('univer_')) return null
   const operation = name.slice('univer_'.length).replaceAll('_', '-')
-  if (operation === 'new' || operation === 'status' || operation === 'worktree' || operation === 'unit' || operation === 'import' || operation === 'inspect' || operation === 'execute' || operation === 'export' || operation === 'lint' || operation === 'screenshot' || operation === 'compile-svg') return operation
+  if (operation === 'new' || operation === 'status' || operation === 'worktree' || operation === 'unit' || operation === 'import' || operation === 'inspect' || operation === 'execute' || operation === 'export') return operation
   return null
 }
 
 function isWrite(operation: UniverTurnOperation): boolean {
-  return operation.name === 'execute' || operation.name === 'import' || operation.name === 'unit' || operation.name === 'compile-svg'
+  return operation.name === 'execute' || operation.name === 'import' || operation.name === 'unit'
 }
 
 function parseRecord(text: string): Record<string, unknown> | null {

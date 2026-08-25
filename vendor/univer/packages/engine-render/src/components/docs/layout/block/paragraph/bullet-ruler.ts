@@ -1,0 +1,162 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { ListGlyphType, numberToListABC } from '@univerjs/core';
+
+export function getBulletOrderedSymbol(startIndex: number, startNumber: number, glyphType: ListGlyphType | string) {
+    // if (!(glyphType in GlyphType)) {
+    //     return dealWidthCustomBulletOrderedSymbol(startIndex, startNumber, glyphType as string); // Plugin defines more types of bullets
+    // }
+
+    return generateOrderedSymbol(startIndex, startNumber, glyphType as ListGlyphType);
+}
+
+function generateOrderedSymbol(startIndex: number, startNumber: number, glyphType: ListGlyphType) {
+    // startIndex starts from 0, startNumber defaults to 1 for user input
+    if (glyphType === ListGlyphType.DECIMAL) {
+        return decimal(startIndex, startNumber);
+    }
+    if (glyphType === ListGlyphType.DECIMAL_ZERO) {
+        return zeroDecimal(startIndex, startNumber);
+    }
+    if (glyphType === ListGlyphType.UPPER_LETTER) {
+        return upperAlpha(startIndex, startNumber);
+    }
+    if (glyphType === ListGlyphType.LOWER_LETTER) {
+        return alpha(startIndex, startNumber);
+    }
+    if (glyphType === ListGlyphType.UPPER_ROMAN) {
+        return upperRoman(startIndex, startNumber);
+    }
+    if (glyphType === ListGlyphType.LOWER_ROMAN) {
+        return roman(startIndex, startNumber);
+    }
+    if (glyphType === ListGlyphType.CHINESE_COUNTING) {
+        return chineseCounting(startIndex, startNumber);
+    }
+
+    return decimal(startIndex, startNumber);
+}
+
+// A number, like 1, 2, or 3.
+function decimal(startIndex: number, startNumber: number) {
+    const currentIndex = startIndex + startNumber;
+    return currentIndex.toString();
+}
+
+// A number where single digit numbers are prefixed with a zero, like 01, 02, or 03. Numbers with more than one digit are not prefixed with a zero.
+function zeroDecimal(startIndex: number, startNumber: number) {
+    const currentIndex = startIndex + startNumber;
+
+    if (currentIndex < 10) {
+        return `0${currentIndex}`;
+    }
+    return currentIndex.toString();
+}
+
+// An uppercase letter, like A, B, or C.
+function upperAlpha(startIndex: number, startNumber: number) {
+    return numberToListABC(startIndex + startNumber - 1, true);
+}
+
+// A lowercase letter, like a, b, or c.
+function alpha(startIndex: number, startNumber: number) {
+    return numberToListABC(startIndex + startNumber - 1, false);
+}
+
+// An uppercase Roman numeral, like I, II, or III.
+function upperRoman(startIndex: number, startNumber: number) {
+    return _convertRoman(startIndex + startNumber, true);
+}
+
+// A lowercase Roman numeral, like i, ii, or iii.
+function roman(startIndex: number, startNumber: number) {
+    return _convertRoman(startIndex + startNumber, false);
+}
+
+function chineseCounting(startIndex: number, startNumber: number) {
+    const value = startIndex + startNumber;
+    if (value <= 0 || value >= 10000) {
+        return value.toString();
+    }
+
+    const digits = '零一二三四五六七八九';
+    const units = ['', '十', '百', '千'];
+    let result = '';
+    let pendingZero = false;
+    for (let place = 3; place >= 0; place--) {
+        const divisor = 10 ** place;
+        const digit = Math.floor(value / divisor) % 10;
+        if (digit === 0) {
+            pendingZero ||= result.length > 0 && value % divisor > 0;
+            continue;
+        }
+        if (pendingZero) {
+            result += digits[0];
+            pendingZero = false;
+        }
+        if (!(digit === 1 && place === 1 && result.length === 0)) {
+            result += digits[digit];
+        }
+        result += units[place];
+    }
+    return result;
+}
+
+function _convertRoman(num: number, uppercase = false) {
+    const upperLookup = {
+        M: 1000,
+        CM: 900,
+        D: 500,
+        CD: 400,
+        C: 100,
+        XC: 90,
+        L: 50,
+        XL: 40,
+        X: 10,
+        IX: 9,
+        V: 5,
+        IV: 4,
+        I: 1,
+    };
+    const lowerLookup = {
+        m: 1000,
+        cm: 900,
+        d: 500,
+        cd: 400,
+        c: 100,
+        xc: 90,
+        l: 50,
+        xl: 40,
+        x: 10,
+        ix: 9,
+        v: 5,
+        iv: 4,
+        i: 1,
+    };
+    let lookup: { [key: string]: number } = lowerLookup;
+    if (uppercase) {
+        lookup = upperLookup;
+    }
+    let romanStr = '';
+    for (const i in lookup) {
+        while (num >= lookup[i]) {
+            romanStr += i;
+            num -= lookup[i];
+        }
+    }
+    return romanStr;
+}

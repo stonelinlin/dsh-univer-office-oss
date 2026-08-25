@@ -1,0 +1,124 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ReactNode } from 'react';
+import type { Observable } from 'rxjs';
+import type { IMenuSelectorItem } from '../../services/menu/menu';
+import { ColorKit, LocaleService } from '@univerjs/core';
+import { useMemo } from 'react';
+import { isObservable } from 'rxjs';
+import { ComponentManager } from '../../common/component-manager';
+import { IconManager } from '../../common/icon-manager';
+import { useDependency, useObservable } from '../../utils/di';
+
+export type ICustomLabelProps<T = undefined> = {
+    className?: string;
+
+    iconSize?: number;
+
+    preserveStrokeWidth?: boolean;
+
+    value?: string | number | undefined;
+
+    value$?: Observable<T>;
+
+    onChange?(v: string | number): void;
+
+    title?: ReactNode;
+} & Pick<IMenuSelectorItem<string, unknown>, 'label' | 'icon'>;
+
+/**
+ * The component to render toolbar item label and menu item label.
+ * @param props
+ */
+export function CustomLabel(props: ICustomLabelProps) {
+    const { className, iconSize, preserveStrokeWidth, title, icon, label, value, value$ } = props;
+    const localeService = useDependency(LocaleService);
+    const componentManager = useDependency(ComponentManager);
+    const iconManager = useDependency(IconManager);
+    const subscribedValue = useObservable(value$ ?? null, value);
+    const observableIcon = isObservable(icon) ? icon : null;
+    const subscribedIcon = useObservable(observableIcon, '');
+    const realIcon = isObservable(icon) ? subscribedIcon : icon ?? '';
+
+    const nodes = [];
+    let index = 0;
+
+    const realValue = useMemo(() => {
+        return value ?? subscribedValue;
+    }, [subscribedValue, value]);
+
+    // if value is not valid, use primary color
+    const isValid = useMemo(() => {
+        if (realValue && typeof realValue === 'string') {
+            return new ColorKit(realValue).isValid;
+        }
+        return false;
+    }, [realValue]);
+
+    if (realIcon) {
+        const Icon = iconManager.get(realIcon);
+
+        if (Icon) {
+            nodes.push(
+                <Icon
+                    key={index++}
+                    className="univer-text-base"
+                    style={iconSize ? { width: iconSize, height: iconSize } : undefined}
+                    extend={{ colorChannel1: isValid ? String(realValue) : 'var(--univer-primary-600)' }}
+                    preserveStrokeWidth={preserveStrokeWidth}
+                />
+            );
+        }
+    }
+    if (label) {
+        const isStringLabel = typeof label === 'string';
+
+        const customProps = isStringLabel ? { ...props } : { ...label?.props, ...props };
+        const labelName = isStringLabel ? label : label?.name;
+
+        const CustomComponent = componentManager.get(labelName);
+
+        if (CustomComponent) {
+            nodes.push(
+                <CustomComponent
+                    key={index++}
+                    {...customProps}
+                    className={className}
+                    value={realValue}
+                />
+            );
+        } else {
+            nodes.push(
+                <span
+                    key={index++}
+                    className={className}
+                >
+                    {localeService.t(labelName)}
+                </span>
+            );
+        }
+    }
+    if (title) {
+        nodes.push(
+            <span key={index++} className={className}>
+                {typeof title === 'string' ? localeService.t(title) : title}
+            </span>
+        );
+    }
+
+    return <>{nodes}</>;
+}

@@ -1,0 +1,52 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { DocumentDataModel } from '@univerjs/core';
+import type { LocaleKey } from '../../../locale/types';
+import { IUniverInstanceService, LocaleService, UniverInstanceType } from '@univerjs/core';
+import { DocSkeletonManagerService } from '@univerjs/docs';
+import { DocumentEditArea, IRenderManagerService } from '@univerjs/engine-render';
+import { useDependency, useObservable } from '@univerjs/ui';
+import { filter, map } from 'rxjs';
+import { DocHeaderFooterOptions } from './DocHeaderFooterOptions';
+
+export const DocHeaderFooterPanel = () => {
+    const localeService = useDependency(LocaleService);
+    const renderManagerService = useDependency(IRenderManagerService);
+    const univerInstanceService = useDependency(IUniverInstanceService);
+    const documentDataModel = univerInstanceService.getCurrentUnitOfType<DocumentDataModel>(UniverInstanceType.UNIVER_DOC)!;
+    const unitId = documentDataModel.getUnitId()!;
+    const docSkeletonManagerService = renderManagerService.getRenderUnitById(unitId)?.with(DocSkeletonManagerService);
+
+    const viewModel = docSkeletonManagerService!.getViewModel();
+    const isEditHeaderFooter = useObservable(
+        () => viewModel.editAreaChange$.pipe(
+            filter((editArea) => editArea != null),
+            map((editArea) => editArea !== DocumentEditArea.BODY)
+        ),
+        viewModel.getEditArea() !== DocumentEditArea.BODY,
+        false,
+        [viewModel]
+    );
+
+    return (
+        <div className="univer-text-sm">
+            {isEditHeaderFooter
+                ? <DocHeaderFooterOptions unitId={unitId} />
+                : <div className="univer-text-gray-400">{localeService.t<LocaleKey>('docs-ui.headerFooter.disableText')}</div>}
+        </div>
+    );
+};

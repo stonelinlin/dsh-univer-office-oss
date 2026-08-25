@@ -1,0 +1,37 @@
+/**
+ * Copyright 2023-present DreamNum Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import type { ICustomRangeForInterceptor, ITextStyle, Nullable } from '@univerjs/core';
+import { BooleanNumber, CustomRangeType } from '@univerjs/core';
+
+const CUSTOM_RANGE_COLOR_TOKEN = 'blue.600';
+
+export function getCustomRangeStyle(customRange: ICustomRangeForInterceptor): Nullable<ITextStyle> {
+    if (
+        customRange.rangeType === CustomRangeType.HYPERLINK ||
+        customRange.rangeType === CustomRangeType.MENTION ||
+        customRange.rangeType === CustomRangeType.CUSTOM
+    ) {
+        const preserveTextColor = customRange.properties?.textColorMode === 'text';
+        const showUnderline = customRange.rangeType === CustomRangeType.HYPERLINK || (customRange.active ?? true);
+        return {
+            ...showUnderline ? { ul: { s: BooleanNumber.TRUE } } : null,
+            ...preserveTextColor ? null : { cl: { rgb: CUSTOM_RANGE_COLOR_TOKEN } },
+        };
+    }
+
+    return null;
+}
