@@ -110,13 +110,13 @@ function statusLabel(status: CardStatus, t: TranslateNS<'univer'>): string {
 
 function withUnit(url: string | undefined, unitId: string | undefined): string | undefined {
   if (url === undefined || unitId === undefined) return url
-  const target = new URL(url)
+  const target = new URL(url, window.location.origin)
   target.searchParams.set('unit', unitId)
   return target.toString()
 }
 
 function reviewPageUrl(url: string): string {
-  const target = new URL(url)
+  const target = new URL(url, window.location.origin)
   target.searchParams.delete('mode')
   target.searchParams.set('sidebar', 'collapsed')
   return target.toString()

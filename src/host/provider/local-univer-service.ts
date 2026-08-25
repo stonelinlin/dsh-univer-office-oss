@@ -297,6 +297,7 @@ function worktreeState(file: string, worktree: LocalWorktree): WorktreeState {
       type: value.kind,
       kind: before === undefined ? 'added' : after === undefined ? 'deleted' : 'modified',
       worktreeUrl: viewerUrl(file, worktree.id, id),
+      mergeUrl: viewerUrl(file, worktree.id, id),
     })
   }
   return {
@@ -306,6 +307,7 @@ function worktreeState(file: string, worktree: LocalWorktree): WorktreeState {
     units,
     openUrl: viewerUrl(file, worktree.id),
     worktreeUrl: viewerUrl(file, worktree.id),
+    mergeUrl: viewerUrl(file, worktree.id),
   }
 }
 

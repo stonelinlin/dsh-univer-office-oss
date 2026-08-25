@@ -15,7 +15,7 @@ import { resolveAuthorizedFile } from './session-scope.ts'
 
 const MAX_BODY_BYTES = 64 * 1024
 const MAX_VIEWER_BODY_BYTES = 16 * 1024 * 1024
-const VIEWER_ROOT = fileURLToPath(new URL('../artifacts/viewer/', import.meta.url))
+const VIEWER_ROOT = resolve(fileURLToPath(new URL('../artifacts/viewer/', import.meta.url)))
 
 /** Create the `/univer-api` HTTP dispatcher. */
 export function createUniverRouter(service: UniverService, sessions: SessionStore) {
@@ -124,7 +124,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes: number = MAX_BOD
 
 async function sendAsset(response: ServerResponse, relativePath: string): Promise<void> {
   const path = resolve(VIEWER_ROOT, relativePath)
-  if (path !== VIEWER_ROOT.slice(0, -1) && !path.startsWith(`${VIEWER_ROOT}${sep}`)) {
+  if (path !== VIEWER_ROOT && !path.startsWith(`${VIEWER_ROOT}${sep}`)) {
     throw new UniverError('Invalid Viewer asset path.', 'INVALID_REQUEST')
   }
   const content = await readFile(path)
